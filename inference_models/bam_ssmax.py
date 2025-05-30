@@ -20,17 +20,17 @@ class SSMaxBATModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 1024
 
-    shape_init: float | str = 0
-    scale_init: float | str = 5
-    loc_init:   float = 0
+    thata_beta_init: float | str = 0
+    theta_alpha_init: float | str = 0
+    theta_mu_init:   float = 0
 
-    train_shape: bool = True
-    train_scale: bool = True
-    train_loc:   bool = False
+    train_theta_beta: bool = True
+    train_theta_alpha: bool = True
+    train_theta_mu: bool = False
 
-    global_positional_encoding: bool = True
+    global_positional_encoding: bool = False
     seq_scale: bool = True
-    ssmax_prior: bool = True
+
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -53,40 +53,36 @@ class AttentionPrior(nn.Module):
         self.eps = 1e-5
 
         
-        if args.scale_init == 'slope':
-            scale = torch.tensor(get_slopes(args.n_heads), dtype=torch.float).reshape(1, args.n_heads, 1, 1)
-        elif args.scale_init == 'sampled':
-            scale = torch.randn((1, args.n_heads, 1, 1), dtype=torch.float).exp()
+        if args.theta_alpha_init == 'slope':
+            theta_alpha = torch.tensor(get_slopes(args.n_heads), dtype=torch.float).reshape(1, args.n_heads, 1, 1)
+        elif args.theta_alpha_init == 'sampled':
+            theta_alpha = torch.randn((1, args.n_heads, 1, 1), dtype=torch.float)
         else:
-            scale = torch.full((1, args.n_heads, 1, 1), float(args.scale_init), dtype=torch.float)
-        scale = torch.log(scale)
+            theta_alpha = torch.full((1, args.n_heads, 1, 1), float(args.theta_alpha_init), dtype=torch.float)
         
-        if args.train_shape and args.shape_init == 'linear':
-            shape  = torch.linspace(0, 1, args.n_heads, dtype=torch.float).reshape(1, args.n_heads, 1, 1)
-        elif args.train_shape and args.shape_init == 'sampled':
-            shape  = torch.randn((1, args.n_heads, 1, 1), dtype=torch.float)
-        elif args.train_shape:
-            shape   = torch.full((1, args.n_heads, 1, 1), float(args.shape_init), dtype=torch.float)
+        if args.train_theta_beta and args.thata_beta_init == 'linear':
+            theta_beta  = torch.linspace(0, 1, args.n_heads, dtype=torch.float).reshape(1, args.n_heads, 1, 1)
+        elif args.train_theta_beta and args.thata_beta_init == 'sampled':
+            theta_beta  = torch.randn((1, args.n_heads, 1, 1), dtype=torch.float)
+        elif args.train_theta_beta:
+            theta_beta   = torch.full((1, args.n_heads, 1, 1), float(args.thata_beta_init), dtype=torch.float)
         else:
-            shape   = torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
+            theta_beta   = torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
 
-        loc     = torch.full((1, args.n_heads, 1, 1), float(args.loc_init),   dtype=torch.float)
+        theta_mu     = torch.full((1, args.n_heads, 1, 1), float(args.theta_mu_init),   dtype=torch.float)
         
-        self.shape = nn.Parameter(shape, requires_grad = args.train_shape)
-        self.scale = nn.Parameter(scale, requires_grad = args.train_scale)
-        self.loc   = nn.Parameter(loc,   requires_grad = args.train_loc)
-
-
-
-
+        self.theta_beta = nn.Parameter(theta_beta, requires_grad = args.train_theta_beta)
+        self.theta_alpha = nn.Parameter(theta_alpha, requires_grad = args.train_theta_alpha)
+        self.theta_mu   = nn.Parameter(theta_mu,   requires_grad = args.train_theta_mu)
+        
     def forward(self, seq_len=None, start_pos=0):
         seq_len = seq_len or self.seq_len
-        q_positions = torch.arange(seq_len, device=self.scale.device).float() + start_pos
-        k_positions = torch.arange(seq_len+start_pos, device=self.scale.device).float()
+        q_positions = torch.arange(seq_len, device=self.theta_alpha.device).float() + start_pos
+        k_positions = torch.arange(seq_len+start_pos, device=self.theta_alpha.device).float()
 
         b = (k_positions[None,:] - q_positions[:, None]).reshape(1, 1, seq_len, seq_len+start_pos)
-        b = b - (self.loc.exp() - (-self.loc).exp())
-        return -((b.abs() + self.eps) ** self.shape) * self.scale.exp() 
+        b = b - (self.theta_mu.exp() - (-self.theta_mu).exp())
+        return -((b.abs() + self.eps) ** self.theta_beta) * self.theta_alpha.exp() 
     
 
 def get_slopes(n):
@@ -122,7 +118,6 @@ class BayesianAttention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
-        self.ssmax_prior = args.ssmax_prior
 
         self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
@@ -176,15 +171,12 @@ class BayesianAttention(nn.Module):
 
         scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if section_log_len is not None and not self.ssmax_prior:
-            scores = scores * (section_log_len * self.seq_scale)
-
         if self.local_positional_encoding:
             scores = scores + self.prior(seqlen, start_pos)
         elif global_prior is not None:
             scores = scores + global_prior
 
-        if section_log_len is not None and self.ssmax_prior:
+        if section_log_len is not None:
             scores = scores * (section_log_len * self.seq_scale)
 
         if mask is not None:

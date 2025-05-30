@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -78,9 +75,7 @@ class Attention(nn.Module):
 
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(
-            1, 2
-        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
             scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
@@ -155,8 +150,6 @@ class ALiBiTransformer(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        # self.slopes = torch.tensor(self.get_slopes(params.n_heads)).reshape(1, params.n_heads, 1, 1)
-        # self.slopes = nn.Parameter(self.slopes)
         slopes = self.get_slopes(params.n_heads)
         self.register_buffer("slopes", torch.tensor(slopes).reshape(1, params.n_heads, 1, 1), persistent=False)
 

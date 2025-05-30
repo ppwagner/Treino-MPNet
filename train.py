@@ -1,21 +1,3 @@
-"""
-Reference code for LLaMA-3.1 training and inference.
-Will save the model weights into files, to be read from C as initialization.
-
-This code differs from GPT-2 very slightly, there are three main differences:
-1) RoPE: LLaMA uses a different positional encoding scheme called Relative Positional Encoding (RoPE).
-2) GQA: Grouped Query Attention (GQA) is used to reduce the number of attention heads.
-3) SwiGLU: Swish-Gated Linear Unit (SwiGLU) is used as the activation function in the MLP.
-
-References:
-# 1) https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/tokenizer.py
-# 2) https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py
-# 3) https://github.com/meta-llama/llama3/blob/11817d47e1ba7a4959b025eb1ca308572e0e3963/llama/generation.py
-
-Example launches to only benchmark the speed of bfloat16 compiled GPU training:
-TODO: add the actual commands
-"""
-
 import argparse
 import os
 import math
@@ -66,24 +48,18 @@ if __name__ == "__main__":
     # file system input / output
     parser.add_argument("--dataset", type=str, default="10B", help="data/ directory containing the training data")
     parser.add_argument("--log_dir", type=str, default="logs", help="output directory to which to write logs and checkpoints")
-    parser.add_argument("--position_encoding", type=str, default="rotary", help="rotary|sinusoidal|alibi|bam")
-    parser.add_argument("--model_size", type=str, default="l12", help="l6|l8|l12|l16|l24|l32")
-    # Bayesian Attention Mechanism specific arguments
-    parser.add_argument("--global_prior", type=bool, default=True, help="whether to use a global prior for BAM (True|False)")
-    # parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="torch.compile the model")
-    # argparse.BooleanOptionalAction but deffault to true
-    # parser.add_argument("--global_prior",  
-    parser.add_argument("--shape_init", type=str, default=1, help="initial shape exponent for BAM, either a string, float or a list of floats")
-    parser.add_argument("--scale_init", type=str, default='slope', help="initial scale multiplier for BAM, either a string, float or a list of floats")
-    parser.add_argument("--loc_init", type=str, default=0, help="initial location sum for BAM, either a string, float or a list of floats")
-    parser.add_argument("--shape_trainable", type=int, default=1, help="trainable shape exponent for BAM")
-    parser.add_argument("--scale_trainable", type=int, default=1, help="trainable scale multiplier for BAM")
-    parser.add_argument("--loc_trainable", type=int, default=1, help="trainable location sum for BAM")
-    parser.add_argument("--shape_lr", type=float, default=None, help="learning rate for shape exponent")
-    parser.add_argument("--scale_lr", type=float, default=None, help="learning rate for scale multiplier")
-    parser.add_argument("--loc_lr", type=float, default=None, help="learning rate for location sum")
+    parser.add_argument("--position_encoding", type=str, default="nope", help="nope|nope_ssmax|sinusoidal|sinusoidal_ssmax|rotary|rotary_ssmax|alibi|alibi_ssmax|bam|bam_ssmax")
+    parser.add_argument("--model_size", type=str, default="l12", help="l6|l8|l12|l15|l18|l24")
+    # Bayesian Attention Mechanism arguments
+    parser.add_argument("--global_prior", action=argparse.BooleanOptionalAction, help="whether to use a global prior for BAM")
+    parser.add_argument("--thata_beta_init", type=str, default='1', help="initial theta beta (shape) exponent for BAM, either a string, or float")
+    parser.add_argument("--theta_alpha_init", type=str, default='1', help="initial exponential scale multiplier for BAM, either a string or float")
+    parser.add_argument("--theta_mu_init", type=float, default=0, help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
+    parser.add_argument("--theta_beta_trainable", type=int, default=1, help="trainable theta beta (shape) exponent for BAM")
+    parser.add_argument("--theta_alpha_trainable", type=int, default=1, help="trainable theta alpha exponent multiplier (scale) for BAM")
+    parser.add_argument("--theta_mu_trainable", type=int, default=1, help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM")
+    parser.add_argument("--prior_lr", type=float, default=None, help="specific learning rate for the BAM prior parameters, if not set, will use the learning rate")
     parser.add_argument("--no_seq_scale", action=argparse.BooleanOptionalAction, help="whether to disable the SSMax sequence scale in BAM")
-    parser.add_argument("--laplace_uniform_heads", type=int, default=1, help="number of uniform heads for Laplace attention")
     # token layout for each step of the optimization
     parser.add_argument("--batch_size", type=int, default=4, help="batch size, in units of #batch dimensions")
     parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
@@ -92,11 +68,10 @@ if __name__ == "__main__":
     parser.add_argument("--max_tokens_per_step", type=int, default=None, help="maximum number of tokens per step")
     # workload (number of steps)
     parser.add_argument("--num_iterations", type=int, default=float('inf'), help="number of iterations to run")
-    parser.add_argument("--inference_only", type=bool, default=0, help="only run inference")
     # optimization
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="learning rate warmup iterations")
-    parser.add_argument("--warmup_iters", type=int, default=0, help="learning rate warmup iterations")
-    parser.add_argument("--learning_rate_decay_frac", type=float, default=1.0, help="learning rate warmup iterations")
+    parser.add_argument("--warmup_iters", type=int, default=0, help="learning rate warmup iterations, not needed due to the use of RAdam optimizer")
+    parser.add_argument("--learning_rate_decay_frac", type=float, default=1.0, help="learning rate sinusoidal decay fraction, 0.1 means 10% of the initial learning rate at the end of training")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="weight decay")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="maximum gradient magnitude")
     # evaluation
@@ -109,27 +84,22 @@ if __name__ == "__main__":
     # debugging
     parser.add_argument("--overfit_single_batch", type=bool, default=0, help="overfit just one batch of data")
     # numerics
-    # parser.add_argument("--tensorcores", type=bool, default=0, help="use tensorcores")
     parser.add_argument("--tensorcores", action=argparse.BooleanOptionalAction, help="use tensorcores")
     # memory management
     parser.add_argument("--device", type=str, default="", help="by default we autodetect, or set it here")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="torch.compile the model")
-    # parser.add_argument("--compile", type=bool, default=False, help="torch.compile the model")
     parser.add_argument("--dtype", type=str, default="float32", help="float32|float16|bfloat16")
 
     args = parser.parse_args()
     # print(args.global_prior)
-    args.shape_trainable = bool(args.shape_trainable)
-    args.scale_trainable = bool(args.scale_trainable)
-    args.loc_trainable = bool(args.loc_trainable)
-    print(f'Train Shape:  {args.shape_trainable}')
-    print(f'Train Scale:  {args.scale_trainable}')
-    print(f'Train Loc:    {args.loc_trainable}')
+    args.theta_beta_trainable = bool(args.theta_beta_trainable)
+    args.theta_alpha_trainable = bool(args.theta_alpha_trainable)
+    args.theta_mu_trainable = bool(args.theta_mu_trainable)
 
     # args error checking and convenience variables
     batch_size, seq_len = args.batch_size, args.sequence_length
     assert args.dtype in {"float32", "float16", "bfloat16"}
-    assert args.model_size in {"l6", "l8", "l12", "l15", "l16", "l18", "l24", "l32"}
+    assert args.model_size in {"l6", "l8", "l12", "l15", "l18", "l24"}
     assert args.position_encoding in {"rotary", "rotary_ssmax", "sinusoidal", "sinusoidal_ssmax", 
                                       "alibi", "alibi_ssmax", "bam", "bam_ssmax", "nope", "nope_ssmax"}
     # assert only one of min_tokens_per_step, tokens_per_step, max_tokens_per_step is set
@@ -140,12 +110,8 @@ if __name__ == "__main__":
                 args.val_tokens is not None, 
                 args.min_val_tokens is not None]) <= 1, "only one of max_val_tokens, val_tokens, min_val_tokens can be set"
 
-    if args.shape_lr is None:
-        args.shape_lr = args.learning_rate
-    if args.scale_lr is None:
-        args.scale_lr = args.learning_rate
-    if args.loc_lr is None:
-        args.loc_lr = args.learning_rate
+    if args.prior_lr is None:
+        args.prior_lr = args.learning_rate
 
     # set up DDP (distributed data parallel). torchrun sets this env variable
     ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -244,17 +210,15 @@ if __name__ == "__main__":
     model_config.max_seq_len = seq_len
     model_config.max_batch_size = batch_size
     if "bam" in args.position_encoding:
-        model_config.shape_init = args.shape_init
-        model_config.scale_init = args.scale_init
-        model_config.loc_init = args.loc_init
-        model_config.train_shape = args.shape_trainable
-        model_config.train_scale = args.scale_trainable
-        model_config.train_loc = args.loc_trainable
+        model_config.thata_beta_init = args.thata_beta_init
+        model_config.theta_alpha_init = args.theta_alpha_init
+        model_config.theta_mu_init = args.theta_mu_init
+        model_config.train_theta_beta = args.theta_beta_trainable
+        model_config.train_theta_alpha = args.theta_alpha_trainable
+        model_config.train_theta_mu = args.theta_mu_trainable
         model_config.global_positional_encoding = args.global_prior
     if "ssmax" in args.position_encoding:
         model_config.seq_scale = not args.no_seq_scale
-    if "laplace" in args.position_encoding:
-        model_config.uniform_heads = args.laplace_uniform_heads
 
     model = Transformer(model_config)
 
@@ -309,12 +273,8 @@ if __name__ == "__main__":
          'init_lr': args.learning_rate, 'lr': args.learning_rate},
         {'params': [p for n, p in param_dict.items() if p.squeeze().dim() < 2  and 'prior' not in n], 'weight_decay': 0.0, 
          'init_lr': args.learning_rate, 'lr': args.learning_rate},
-        {'params': [p for n, p in param_dict.items() if 'prior.shape' in n], 'weight_decay': 0.0, 'lr': args.shape_lr, 
-         'init_lr': args.shape_lr, 'lr': args.shape_lr},
-        {'params': [p for n, p in param_dict.items() if 'prior.scale' in n], 'weight_decay': 0.0, 'lr': args.scale_lr, 
-         'init_lr': args.scale_lr, 'lr': args.scale_lr},
-        {'params': [p for n, p in param_dict.items() if 'prior.loc'   in n], 'weight_decay': 0.0, 'lr': args.loc_lr,   
-         'init_lr': args.loc_lr, 'lr': args.loc_lr},
+        {'params': [p for n, p in param_dict.items() if 'prior' in n], 'weight_decay': 0.0, 'lr': args.prior_lr, 
+         'init_lr': args.prior_lr, 'lr': args.prior_lr},
     ]
     optimizer = torch.optim.RAdam(optim_groups, betas=(0.9, 0.95), weight_decay=args.weight_decay, decoupled_weight_decay=True)
     # optimizer = torch.optim.AdamW(optim_groups, betas=(0.9, 0.95), weight_decay=args.weight_decay)
@@ -439,8 +399,7 @@ if __name__ == "__main__":
                 loss = loss / grad_accum_steps
                 lossf += loss.detach() # keep track of the mean loss
             # backward pass
-            if not args.inference_only:
-                loss.backward()
+            loss.backward()
         if ddp:
             dist.all_reduce(lossf, op=dist.ReduceOp.AVG)
         lossf = lossf.item()

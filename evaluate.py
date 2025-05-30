@@ -1,120 +1,31 @@
-# from transformers import AutoTokenizer, AutoModel, pipeline
-# import torch
-# import numpy as np
-
-# from BAM.eval_utils import PasskeyEvaluator, PromptGenerator, load_model
-
-# torch.set_float32_matmul_precision('high')
-# DEVICE = 'cuda:0'
-# DEVICE = 'cuda:3'
-# # DEVICE = 'cpu'
-
-
-# seq_lens = [0, 1024, 1050, 1100, 1150, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000]
-# # seq_lens = [0, 1024, 1050, 1100, 1150, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 11000]
-# # seq_lens = [0, 1024, 1050, 1100, 1150, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000]
-# # seq_lens = [0, 1024, 1050, 1100, 1150, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000]
-# seq_lens = [0, 1024, 1250, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000]
-# seq_lens = [0, 1024, 1250, 1500, 1750, 2000, 3000, 4000, 5000, 6000]
-# seq_lens = [0, 1024, 1050, 1100, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000]
-# seq_lens = [0, 128,256,512,640,768,896,1000,1024, 1050, 1100, 1200, 1300, 1400, 1500, 1750, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000]
-# # seq_lens = [0,1024, 2048,2100,2150,2200,2250,2300,2350,2400,2500, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000]
-# # seq_lens = [0, 1024, 1050, 1100, 1250, 1350, 1500, 1750, 2000, 4000, 6000]
-# seq_lens = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12000, 14000, 16000, 20000, 24000, 28000, 32000, 36000, 40000]
-# seq_lens = [0, 5_000, 10_000, 15_000, 20_000, 25_000, 30_000, 35_000, 40_000, 45_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000]
-# seq_lens = [0, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000]
-# seq_lens = [0, 2_000, 4_000, 6_000, 8_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000, 120_000, 140_000, 160_000, 180_000, 200_000]
-# # seq_lens = [0, 20_000, 40_000, 60_000, 80_000, 100_000, 120_000, 140_000, 160_000, 180_000, 200_000, 220_000, 240_000, 260_000, 280_000, 300_000]
-# # seq_lens = [0, 50_000, 100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000]
-# # seq_lens = [0, 100_000, 200_000, 300_000, 400_000, 500_000]
-# # seq_lens = [0, 300_000, 400_000, 500_000, 750_000, 1_000_000, 1_500_000, 2_000_000]
-# # seq_lens = [0, 25_000, 50_000, 75_000, 90_000]
-# seq_lens = [0, 4_000, 500_000]
-# seq_lens = [0, 4_000, 750_000]
-# seq_lens = [0, 4_000, 1_000_000]
-# seq_lens = [0, 4_000, 100_000, 1_000_000]
-
-# ctx = torch.autocast('cuda', enabled=True, dtype=torch.bfloat16)
-
-# sample_size = 4	
-# sample_size = 10
-# # sample_size = 20
-# # sample_size = 100
-# evaluator = PasskeyEvaluator(seq_lens, device=DEVICE, sampling='beginning', preffix_digits=0, patience=2)
-# # evaluator = PasskeyEvaluator(seq_lens, device=DEVICE, sampling='beginning', pred_digits=2, patience=2)
-# # evaluator = PasskeyEvaluator(seq_lens, device=DEVICE, sampling='beginning', preffix_digits=1, patience=2)
-# # evaluator = PasskeyEvaluator(seq_lens, device=DEVICE, preffix_digits=0)
-# # evaluator = PasskeyEvaluator(seq_lens, device=DEVICE, preffix_digits=0)
-
-
-# # model = load_model('./logs/l12/bam_ssmax/version_00/')
-# # model = load_model('./logs/l12/bam_ssmax/version_01/')
-# # model = load_model('./logs/l12/bam_ssmax/version_02/')
-# model = load_model('./logs/l12/bam_ssmax/version_03/')
-# # bam_ssmax_lens, bam_ssmax_accs = evaluator.evaluate(model, sample_size=sample_size)
-# with ctx:
-#     bam_ssmax_lens, bam_ssmax_accs = evaluator.evaluate(model, sample_size=sample_size)
-
-
-
+import torch
+import argparse
 from eval_utils import Evaluator
-DEVICE = 'cuda:1'
 
-evaluator = Evaluator(device=DEVICE,
-                      seq_batch_size=1024,
-                      passkey_preffix_digits=1,
-                    #   # passkey_seq_lens=[0, 1000, 10_000, 100_000, 500_000],
-                    #   # passkey_seq_lens=[0, 1000, 10_000, 100_000, 500_000],
-                    #   # passkey_sample_size=1,
-                    #   # passkey_samplings=['beginning'],
-                    #   passkey_samplings=[],
-                    # #   passkey_samplings=['equidistant'],
-                    # #   perplexity_wiki_articles=2,
-                    # #   perplexity_wiki_articles=32,
-                    #   perplexity_seq_len=1024,
-                    # #   perplexity_seq_len=20480,
-                    # #   perplexity_seq_len=2*20480,
-                    # #   perplexity_seq_len=4*20480,
-                    #   seq_batch_size=1024,
-                    #   # perplexity_seq_len=102400,
-                    #   perplexity_dataset_dirs=['10B']
-                    #   # perplexity_dataset_dirs=['10B']
-                    #   # perplexity_dataset_dirs=[]
+parser = argparse.ArgumentParser()
+parser.add_argument('--device', type=str, default='cuda:0', help='Device to use for evaluation')
+parser.add_argument('--seq_batch_size', type=int, default=32, help='Sequence batch size for KV cache evaluation')
+parser.add_argument('--linspace_start', type=int, default=0, help='Start of the linspace for passkey sequence lengths')
+parser.add_argument('--linspace_end', type=int, default=32_768, help='End of the linspace for passkey sequence lengths')
+parser.add_argument('--linspace_steps', type=int, default=10, help='Number of steps in the linspace for passkey sequence lengths')
+parser.add_argument('--passkey_sample_size', type=int, default=20, help='Number of samples for passkey evaluation')
+parser.add_argument('--log_dir', type=str, default='logs', help='Directory to look for model checkpoints')
+parser.add_argument('--perplexity', action=argparse.BooleanOptionalAction, default=False, help='Whether to run perplexity evaluation')
+parser.add_argument('--perplexity_seq_len', type=int, default=32_768, help='Sequence length for perplexity evaluation')
+parser.add_argument('--perplexity_wiki_articles', type=int, default=128, help='Number of Wikipedia articles for perplexity evaluation')
+args = parser.parse_args()
+
+if args.perplexity:
+    perplexity_dataset_dirs = ['wikipedia'],
+
+passkey_seq_lens = torch.linspace(args.linspace_start, args.linspace_end, args.linspace_steps).int().tolist()
+evaluator = Evaluator(device=args.device,
+                      seq_batch_size=args.seq_batch_size,
+                      passkey_seq_lens=passkey_seq_lens,
+                      passkey_sample_size=args.passkey_sample_size,
+                      perplexity_seq_len=args.perplexity_seq_len,
+                      perplexity_wiki_articles=args.perplexity_wiki_articles,
+                      perplexity_dataset_dirs=['wikipedia'] if args.perplexity else [],
 )
-
-nope_1024           = 'logs_paper/1024/nope/version_00/'
-sin_1024            = 'logs_paper/1024/sinusoidal/version_00/'
-rotary_1024         = 'logs_paper/1024/rotary/version_00/'
-rotary_local_1024   = 'logs_paper/1024/rotary_local/version_00/'
-alibi_1024          = 'logs_paper/1024/alibi/version_00/'
-bam_1024            = 'logs_paper/1024/bam/version_00/'
-rotary_ssmax_1024   = 'logs_paper/1024/rotary_ssmax/version_00/'
-bam_ssmax_1024      = 'logs_paper/1024/bam_ssmax/version_01/'
-bam_ssmax_1024      = 'logs_paper/1024/bam_ssmax/version_01/'
-bam_ssmax_1024      = 'logs/l12/bam_ssmax/version_08/'
-bam_ssmax_1024      = 'logs_paper/1024/bam_ssmax/version_02/'
-bam_ssmax_1024      = 'logs_paper/1024/bam_ssmax/version_02_2/'
-
-# for model_path in [nope_1024, sin_1024, rotary_1024, rotary_local_1024, alibi_1024, bam_1024, bam_ssmax_1024]:
-# for model_path in [alibi_1024, bam_1024, bam_ssmax_1024]:
-for model_path in [bam_ssmax_1024]:
-# for model_path in [rotary_local_1024]:
-    print(f"Evaluating {model_path}")
-    evaluator.evaluate(model_path)
-    print('\n')
-
-
-evaluator = Evaluator(device=DEVICE,
-                      passkey_preffix_digits=1,
-                      passkey_seq_lens=[0, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000, 200_000, 300_000, 400_000, 500_000],
-                      passkey_sample_size=10,
-                      seq_batch_size=64,
-                      perplexity_seq_len=102400,
-                      perplexity_wiki_articles=40,
-)
-
-for model_path in [bam_ssmax_1024]:
-# for model_path in [rotary_local_1024]:
-    print(f"Evaluating {model_path}")
-    evaluator.evaluate(model_path)
-    print('\n')
+# bam_ssmax_1024      = 'logs/l12/bam_ssmax/version_08/'
+evaluator.evaluate(args.log_dir)

@@ -23,7 +23,6 @@ from inference_models.nope_ssmax import NoPESSMaxModelArgs, NoPESSMaxTransformer
 
 class PasskeyEvaluator:
     def __init__(self, seq_lens, device='cpu', pred_digits=5, preffix_digits=0, sampling='equidistant', patience=float('inf'), sample_size=10, seq_batch_size=None):
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.generator = PromptGenerator(digits=pred_digits+preffix_digits)
         self.seq_lens = [len(self.generator(seq_len)[0][0]) for seq_len in seq_lens]
         self.device = device
@@ -35,7 +34,6 @@ class PasskeyEvaluator:
         self.seq_batch_size = seq_batch_size
 
     @torch.inference_mode()
-    # def evaluate(self, model, sample_size=100, verbose=True, patience=3):
     def evaluate(self, model, verbose=True, patience=None, prev_results=None):
         result_config = str((self.sampling, self.sample_size, self.pred_digits, self.preffix_digits))
         if prev_results is not None:
@@ -66,8 +64,7 @@ class PasskeyEvaluator:
                 if (list(pred_pass_key) == pass_key[self.preffix_digits+1:]):
                     correct += 1
                 end = time()
-                print(f"                seq_len: {len(prompt)}, acc: {correct}/{i+1} of {self.sample_size} took {(end-start)/(i+1):.2f}s              {self.generator.tokenizer.decode(output[0,-1].cpu())}")
-                # print(f"                seq_len: {len(prompt)}, acc: {correct}/{i+1} of {self.sample_size} took {(end-start)/(i+1):.2f}s", end='\r')
+                print(f"                seq_len: {len(prompt)}, acc: {correct}/{i+1} of {self.sample_size} took {(end-start)/(i+1):.2f}s", end='\r')
             results[result_config]['seq_lens'].append(seq_len)
             results[result_config]['accs'].append(correct/self.sample_size)
             if verbose:
@@ -103,23 +100,6 @@ class PromptGenerator:
         self.final_question_len     = len(self.final_question_tokens)
         self.n_digits               = digits
 
-    # def generate_prompt(self, length):
-    #     n_garbage = (length -self.task_description_len -self.information_line_len -self.final_question_len) // self.garbage_inf_len
-    #     n_garbage_prefix = random.randint(0, n_garbage) if n_garbage > 0 else 0
-    #     return self.__generate_prompt(n_garbage, n_garbage_prefix)
-    
-    # def generate_prompts(self, length, n_prompts):
-    #     prompts = []
-    #     passkeys = []
-    #     n_garbage = (length -self.task_description_len -self.information_line_len -self.final_question_len) // self.garbage_inf_len
-    #     paskeys_positions = torch.linspace(0, n_garbage-1, n_prompts).long()
-    #     for passkey_position in paskeys_positions:
-    #         n_garbage_prefix = passkey_position
-    #         prompt, passkey_tokens = self.__generate_prompt(n_garbage, n_garbage_prefix)
-    #         prompts.append(prompt)
-    #         passkeys.append(passkey_tokens)
-    #     return prompts, passkeys
-    
     def __generate_prompt(self, n_garbage, n_garbage_prefix):
         n_garbage_suffix = n_garbage - n_garbage_prefix
 
@@ -144,10 +124,6 @@ class PromptGenerator:
             passkey_positions = random.choices(range(n_garbage+1), k=sample_size)
         elif sampling == 'equidistant':
             passkey_positions = torch.linspace(0, n_garbage, sample_size).long().tolist()
-            # print('Start at 2')
-            # passkey_positions = torch.linspace(0, n_garbage, sample_size).long().tolist()[2:]
-            print('REVERSED')
-            passkey_positions = torch.linspace(0, n_garbage, sample_size).long().tolist()[::-1]
         elif sampling == 'beginning':
             passkey_positions = [0] * sample_size
         elif sampling == 'end':
@@ -201,13 +177,11 @@ class PerplexityEvaluator:
 
                 
         else:
-            # glob files that match the pattern
             files = sorted(os.listdir(self.dataset_dir))
             assert len(files) > 0, f"did not find any files that match the pattern {self.dataset_dir}"
             filename = os.path.join(self.dataset_dir, files[0])
 
             dataset = torch.load(filename)
-            # tokens     = dataset['input_ids'].long()
             tokens     = dataset['input_ids'][:ntokens+1].long()
 
             # Identify EOS and BOS tokens 
@@ -225,12 +199,6 @@ class PerplexityEvaluator:
             tokens = tokens[:nbatches * (seq_len + 1)]
             self.tokens = tokens.reshape(nbatches, seq_len+1)
 
-            # nbatches = len(tokens) // (seq_len)
-            # targets = tokens[1:nbatches * (seq_len)+1]
-            # tokens = tokens[:nbatches * (seq_len)]
-            # self.tokens = tokens.reshape(-1, seq_len)
-            # self.targets = targets.reshape(-1, seq_len)
-
     def evaluate(self, model, prev_results=None):
         model.to(self.device)
         if prev_results is not None:
@@ -246,14 +214,10 @@ class PerplexityEvaluator:
         entropies = torch.zeros(self.nwindows)
         entropies_sqrd = torch.zeros(self.nwindows)
         for i, tokens in enumerate(self.tokens):
-            # tokens = tokens.to(self.device)
             print(f'{i+1}/{len(self.tokens)}   {(entropies.mean()/(i+1)).exp()}')
-            # print(f'{i+1}/{len(self.tokens)}   {(entropies.mean()/(i+1)).exp()}', end='\r')
-            # output = model(tokens.unsqueeze(0).to(self.device)).cpu()
-            # loss = self.cross_entropy(output[0, :, :], self.targets[i]).reshape(-1, self.window_size)
+
             output = model(tokens.unsqueeze(0).to(self.device), seq_batch_size=self.seq_batch_size, return_logits=True, return_device='cpu')
             loss = self.cross_entropy(output[0, :-1, :], tokens[1:]).reshape(-1, self.window_size)
-            # print(       self.cross_entropy(output[0, :-1, :], tokens[1:]).reshape(-1, self.window_size).mean(dim=-1).cpu())
 
             entropies += loss.mean(dim=-1).cpu().detach()
             entropies_sqrd += (loss**2).mean(dim=-1).cpu().detach()
@@ -274,8 +238,6 @@ class PerplexityEvaluator:
         return results, results[-1]
     
 class Evaluator:
-    # def __init__(self, dataset_dir, seq_len, ntokens, window_size=512, window_pos='middle'):
-    # def __init__(self, seq_lens, device='cpu', pred_digits=5, preffix_digits=0, sampling='equidistant', patience=float('inf')):
     def __init__(self,
                  passkey_seq_lens=None,
                  passkey_sample_size=20,
@@ -284,7 +246,6 @@ class Evaluator:
                  passkey_samplings=['equidistant'],
                  passkey_patience=float('inf'),
                  perplexity_dataset_dirs=['10B', 'wikipedia'],
-                #  perplexity_seq_len=102_400,
                  perplexity_seq_len=32_768,
                  perplexity_ntokens=3_932_160,
                  perplexity_window_size=1024,
@@ -325,21 +286,17 @@ class Evaluator:
 
 
         if 'passkey' in evals:
-            # results['passkey'], passkey_result = self.passkey_evaluator.evaluate(model, prev_results=results['passkey'])
             passkey_results = {}
             for evaluator in self.passkey_evaluators:
                 results['passkey'], passkey_result = evaluator.evaluate(model, prev_results=results['passkey'])
-                # passkey_results.append(passkey_result)
                 passkey_results[evaluator.sampling] = passkey_result
         else:
             passkey_result = None
 
         if 'perplexity' in evals:
-            # results['perplexity'], perplexity_result = self.perplexity_evaluator.evaluate(model, prev_results=results['perplexity'])
             perplexity_results = {}
             for evaluator in self.perplexity_evaluators:
                 results['perplexity'], perplexity_result = evaluator.evaluate(model, prev_results=results['perplexity'])
-                # perplexity_results.append(perplexity_result)
                 perplexity_results[evaluator.dataset_dir] = perplexity_result
         else:
             perplexity_result = None
@@ -371,7 +328,6 @@ class Evaluator:
             "nope":         (NoPEModelArgs,         NoPETransformer         ),
             "nope_ssmax":   (NoPESSMaxModelArgs,    NoPESSMaxTransformer    ),
         }[args['args']['position_encoding']]
-        # model_dict = torch.load(dir+f'model{comp}.pt')
         model_dict = torch.load(os.path.join(dir, f'model.pt'))
         model = Transformer(ModelArgs(**args['model_args']))
         model_dict = {k.replace('module.', '').replace('_orig_mod.', ''): v for k, v in model_dict.items()}

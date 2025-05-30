@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -182,8 +179,6 @@ class ALiBiSSMaxTransformer(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        # self.slopes = torch.tensor(self.get_slopes(params.n_heads)).reshape(1, params.n_heads, 1, 1)
-        # self.slopes = nn.Parameter(self.slopes)
         slopes = self.get_slopes(params.n_heads)
         self.register_buffer("slopes", torch.tensor(slopes).reshape(1, params.n_heads, 1, 1), persistent=False)
 

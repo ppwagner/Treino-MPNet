@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -239,7 +236,6 @@ class LocalRotaryTransformer(nn.Module):
             h = full_h[:, start_pos:start_pos+seq_batch_size, :]
             freqs_cis = full_freqs_cis[start_pos:start_pos+seq_batch_size]
             
-            # h = full_h[:, start_pos:start_pos+seq_batch_size, :]
             _bsz, seqlen, h_dim = h.shape
             mask = None
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)

@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -116,9 +113,7 @@ class Attention(nn.Module):
 
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(
-            1, 2
-        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         if section_log_len is not None:
             scores = scores * section_log_len * self.seq_scale

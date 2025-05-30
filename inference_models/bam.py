@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -23,19 +20,16 @@ class BATModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 1024
 
-    # shape_init: float | str = 'linear'
-    # scale_init: float | str = 1/16
-    shape_init: float | str = 1
-    scale_init: float | str = 'slope'
-    loc_init:   float = 0
+    thata_beta_init: float | str = 0
+    theta_alpha_init: float | str = 0
+    theta_mu_init:   float = 0
 
-    train_shape: bool = True
-    train_scale: bool = True
-    train_loc:   bool = False
+    train_theta_beta: bool = True
+    train_theta_alpha: bool = True
+    train_theta_mu:   bool = False
 
-    global_positional_encoding: bool = True
+    global_positional_encoding: bool = False
 
-# loc = exp(loc) - exp(-loc)
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -58,54 +52,35 @@ class AttentionPrior(nn.Module):
         self.eps = 1e-5
 
         
-        if args.scale_init == 'slope':
-            scale = torch.tensor(get_slopes(args.n_heads), dtype=torch.float).reshape(1, args.n_heads, 1, 1)
+        if args.theta_alpha_init == 'slope':
+            theta_alpha = torch.tensor(get_slopes(args.n_heads), dtype=torch.float).reshape(1, args.n_heads, 1, 1)
         else:
-            scale = torch.full((1, args.n_heads, 1, 1), float(args.scale_init), dtype=torch.float)
-        scale = torch.log(scale)
-        # self.register_buffer("scale", torch.tensor(get_slopes(args.n_heads)).reshape(1, args.n_heads, 1, 1))
+            theta_alpha = torch.full((1, args.n_heads, 1, 1), float(args.theta_alpha_init), dtype=torch.float)
+        theta_alpha = torch.log(theta_alpha)
         
-        if args.train_shape and args.shape_init == 'linear':
-            shape  = torch.linspace(0, 1, args.n_heads, dtype=torch.float).reshape(1, args.n_heads, 1, 1)
-        elif args.train_shape:
-            shape   = torch.full((1, args.n_heads, 1, 1), float(args.shape_init), dtype=torch.float)
+        if args.train_theta_beta and args.thata_beta_init == 'linear':
+            theta_beta  = torch.linspace(0, 1, args.n_heads, dtype=torch.float).reshape(1, args.n_heads, 1, 1)
+        elif args.train_theta_beta:
+            theta_beta   = torch.full((1, args.n_heads, 1, 1), float(args.thata_beta_init), dtype=torch.float)
         else:
-            shape   = torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
+            theta_beta   = torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
 
-        loc     = torch.full((1, args.n_heads, 1, 1), float(args.loc_init),   dtype=torch.float)
+        theta_mu     = torch.full((1, args.n_heads, 1, 1), float(args.theta_mu_init),   dtype=torch.float)
         
-        self.shape = nn.Parameter(shape, requires_grad = args.train_shape)
-        self.scale = nn.Parameter(scale, requires_grad = args.train_scale)
-        self.loc   = nn.Parameter(loc,   requires_grad = args.train_loc)
-
-
-        # positions = torch.arange(self.seq_len).float()
-        # self.register_buffer("dist_matrix", 
-        #                      (positions[None, :] - positions[:, None]).reshape(1, 1, self.seq_len, self.seq_len), 
-        #                      persistent=False)
-        # self.dist_matrix = (positions[None, :] - positions[:, None]).reshape(1, 1, self.seq_len, self.seq_len)
+        self.theta_beta = nn.Parameter(theta_beta, requires_grad = args.train_theta_beta)
+        self.theta_alpha = nn.Parameter(theta_alpha, requires_grad = args.train_theta_alpha)
+        self.theta_mu   = nn.Parameter(theta_mu,   requires_grad = args.train_theta_mu)
 
 
     def forward(self, seq_len=None, start_pos=0):
-        # if seq_len == self.dist_matrix.shape[-1] or seq_len is None:
-        #     dist_matrix = self.dist_matrix.to(self.scale.device)
-        # elif seq_len < self.dist_matrix.shape[-1]:
-        #     print('FUUUUCK')
-        #     dist_matrix = self.dist_matrix[..., :seq_len, :seq_len].to(self.scale.device)
-        # else:
-        #     print('FUUUUCK2')
-        #     positions = torch.arange(seq_len).float().to(self.scale.device)
-        #     dist_matrix = (positions[None, :] - positions[:, None]).reshape(1, 1, seq_len, seq_len)
-
-        # positions = torch.arange(seq_len).float().to(self.scale.device)
         seq_len = seq_len or self.seq_len
-        q_positions = torch.arange(seq_len, device=self.scale.device).float() + start_pos
-        k_positions = torch.arange(seq_len+start_pos, device=self.scale.device).float()
+        q_positions = torch.arange(seq_len, device=self.theta_alpha.device).float() + start_pos
+        k_positions = torch.arange(seq_len+start_pos, device=self.theta_alpha.device).float()
 
         dist_matrix = (k_positions[None,:] - q_positions[:, None]).reshape(1, 1, seq_len, seq_len+start_pos)
-        loc = self.loc.exp() - (-self.loc).exp()
-        z = (dist_matrix - loc) * self.scale.exp()
-        return -((z.abs()+self.eps)**self.shape )
+        mu = self.theta_mu.exp() - (-self.theta_mu).exp()
+        z = (dist_matrix - mu) * self.theta_alpha.exp()
+        return -((z.abs()+self.eps)**self.theta_beta )
     
 
 def get_slopes(n):
@@ -271,8 +246,6 @@ class BATransformer(nn.Module):
 
         if self.params.global_positional_encoding:
             self.prior = AttentionPrior(params)
-        # self.slopes = torch.tensor(get_slopes(params.n_heads)).reshape(1, params.n_heads, 1, 1)
-        # self.register_buffer("slopes", torch.tensor(get_slopes(params.n_heads)).reshape(1, params.n_heads, 1, 1))
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, seq_batch_size: Optional[int] = None, return_logits: bool = False, return_device=None):
