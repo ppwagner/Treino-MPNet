@@ -16,7 +16,7 @@ parser.add_argument("--version", type=str, default="10B", help="Fineweb data sam
 parser.add_argument("--tokenizer", type=str, default="mistralai/Mistral-7B-Instruct-v0.3", help="HuggingFace tokenizer")
 parser.add_argument("--shard_size", type=int, default=10**8, help="Size of each data shard in the output .pt files, in tokens")
 parser.add_argument("--batch_size", type=int, default=2**16, help="Size of each data shard in the output .pt files, in tokens")
-parser.add_argument("--no_streaming", action=argparse.BooleanOptionalAction, help="Use streaming mode for loading the dataset")
+parser.add_argument("--streaming", action=argparse.BooleanOptionalAction, help="Use streaming mode for loading the dataset")
 # parser.add_argument("--num_proc", type=int, default=1, help="Number of processes to use for loading the dataset")
 args = parser.parse_args()
 
@@ -56,11 +56,11 @@ def write_datafile(filename, input_ids, seq_codes, tokenizer_name):
     }
     torch.save(data_dict, filename)
 
-if not args.no_streaming:
+if args.streaming:
     print("Streaming mode is enabled.")
 
 print('Loading dataset')
-dataset = load_dataset(dataset_dir, name=name, split="train", streaming=not args.no_streaming)
+dataset = load_dataset(dataset_dir, name=name, split="train", streaming=args.streaming)
 batched_dataset = dataset.batch(batch_size=args.batch_size)
 
 print('Loading tokenizer')
