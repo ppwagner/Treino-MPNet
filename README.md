@@ -1,5 +1,5 @@
 # Bayesian Attention Mechanism
-This repository contains the implementation of the Bayesian Attention Mechanism (BAM) as described in the paper "Bayesian Attention Mechanism for Uncertainty Estimation in Deep Learning" by [Author(s)](link_to_paper). The training code was adapted from [llm.c](https://github.com/karpathy/llm.c), and the model codes used [llama 3](https://github.com/meta-llama/llama-models/blob/main/models/llama3/model.py) as a reference.
+This repository contains the implementation of the Bayesian Attention Mechanism (BAM) as described in the paper "Bayesian Attention Mechanism: A Probabilistic Framework for Positional Encoding and Context Length Extrapolation" by [Author(s)](link_to_paper). The training code was adapted from [llm.c](https://github.com/karpathy/llm.c), and the model codes used [llama 3](https://github.com/meta-llama/llama-models/blob/main/models/llama3/model.py) as a reference.
 
 # Installation
 To install the required dependencies, run the following command:
