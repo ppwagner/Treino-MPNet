@@ -85,6 +85,5 @@ class AttentionPrior(nn.Module):
         positions = torch.arange(seq_len, device=self.theta_alpha.device).float()
         b = (positions[None, :] - positions[:, None]).reshape(1, 1, seq_len, seq_len)
         b = b - (self.theta_mu.exp() - (-self.theta_mu).exp())
-        return -((b.abs() + self.eps) ** self.theta_beta) * self.theta_alpha.exp() 
-    
+        return -((b.abs() + self.eps) ** self.theta_beta) * self.theta_alpha.exp()  
 ```

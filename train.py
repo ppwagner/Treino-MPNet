@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("--theta_mu_init", type=float, default=0, help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
     parser.add_argument("--theta_beta_trainable", type=int, default=1, help="trainable theta beta (shape) exponent for BAM")
     parser.add_argument("--theta_alpha_trainable", type=int, default=1, help="trainable theta alpha exponent multiplier (scale) for BAM")
-    parser.add_argument("--theta_mu_trainable", type=int, default=1, help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM")
+    parser.add_argument("--theta_mu_trainable", type=int, default=0, help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM")
     parser.add_argument("--prior_lr", type=float, default=None, help="specific learning rate for the BAM prior parameters, if not set, will use the learning rate")
     parser.add_argument("--no_seq_scale", action=argparse.BooleanOptionalAction, help="whether to disable the SSMax sequence scale in BAM")
     # token layout for each step of the optimization
