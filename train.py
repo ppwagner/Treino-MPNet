@@ -99,7 +99,7 @@ if __name__ == "__main__":
     # args error checking and convenience variables
     batch_size, seq_len = args.batch_size, args.sequence_length
     assert args.dtype in {"float32", "float16", "bfloat16"}
-    assert args.model_size in {"l6", "l8", "l12", "l15", "l18", "l24"}
+    # assert args.model_size in {"l6", "l8", "l12", "l15", "l18", "l24"}
     assert args.position_encoding in {"rotary", "rotary_ssmax", "sinusoidal", "sinusoidal_ssmax", 
                                       "alibi", "alibi_ssmax", "bam", "bam_ssmax", "nope", "nope_ssmax"}
     # assert only one of min_tokens_per_step, tokens_per_step, max_tokens_per_step is set
@@ -206,6 +206,8 @@ if __name__ == "__main__":
         "l15": ModelArgs(dim=1152, n_layers=15, n_heads=24, ffn_dim_multiplier=2),
         "l18": ModelArgs(dim=1536, n_layers=18, n_heads=32, ffn_dim_multiplier=2),
         "l24": ModelArgs(dim=2048, n_layers=24, n_heads=64, ffn_dim_multiplier=2),
+        # "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4),
+        "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4, n_kv_heads=8),
     }[args.model_size]
     model_config.max_seq_len = seq_len
     model_config.max_batch_size = batch_size
@@ -246,6 +248,8 @@ if __name__ == "__main__":
     val_dataset = dataset.get_val_dataset(device=device)
     train_loader = torch.utils.data.DataLoader(dataset, num_workers=1, batch_size=None, prefetch_factor=4, pin_memory=True, pin_memory_device=device)
     num_iterations = min(dataset_args.iterations, args.num_iterations)
+    print(f"Dataset Iterations: {dataset_args.iterations:16,}")
+    print(f"Total Training Iterations: {num_iterations:16,}")
 
 
     # -------------------------------------------------------------------------
