@@ -52,9 +52,9 @@ if __name__ == "__main__":
     parser.add_argument("--model_size", type=str, default="l12", help="l6|l8|l12|l15|l18|l24")
     # Bayesian Attention Mechanism arguments
     parser.add_argument("--global_prior", action=argparse.BooleanOptionalAction, help="whether to use a global prior for BAM")
-    parser.add_argument("--thata_beta_init", type=str, default='1', help="initial theta beta (shape) exponent for BAM, either a string, or float")
-    parser.add_argument("--theta_alpha_init", type=str, default='1', help="initial exponential scale multiplier for BAM, either a string or float")
-    parser.add_argument("--theta_mu_init", type=float, default=0, help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
+    parser.add_argument("--thata_beta_init", type=str, default='0', help="initial theta beta (shape) exponent for BAM, either a string, or float")
+    parser.add_argument("--theta_alpha_init", type=str, default='0', help="initial exponential scale multiplier for BAM, either a string or float")
+    parser.add_argument("--theta_mu_init", type=float, default='0', help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
     parser.add_argument("--theta_beta_trainable", type=int, default=1, help="trainable theta beta (shape) exponent for BAM")
     parser.add_argument("--theta_alpha_trainable", type=int, default=1, help="trainable theta alpha exponent multiplier (scale) for BAM")
     parser.add_argument("--theta_mu_trainable", type=int, default=0, help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM")
