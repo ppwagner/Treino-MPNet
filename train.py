@@ -89,12 +89,30 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="", help="by default we autodetect, or set it here")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="torch.compile the model")
     parser.add_argument("--dtype", type=str, default="float32", help="float32|float16|bfloat16")
+    # Checkpoint Arguments
+    parser.add_argument("--checkpoint", type=str, default=None, help="path to the checkpoint to load from")
+    parser.add_argument("--checkpoint_args", action=argparse.BooleanOptionalAction, help="load args from the checkpoint")
+    parser.add_argument("--reset_steps", action=argparse.BooleanOptionalAction, help="reset the steps in the checkpoint to 0 (affect lr scheduling)")
 
     args = parser.parse_args()
-    # print(args.global_prior)
+
     args.theta_beta_trainable = bool(args.theta_beta_trainable)
     args.theta_alpha_trainable = bool(args.theta_alpha_trainable)
     args.theta_mu_trainable = bool(args.theta_mu_trainable)
+    
+
+    if args.checkpoint is not None:
+        # load the checkpoint
+        print0(f"Loading checkpoint from {args.checkpoint}")
+        if not os.path.exists(args.checkpoint):
+            raise FileNotFoundError(f"Checkpoint {args.checkpoint} does not exist")
+        if args.checkpoint_args:
+            checkpoint_dir = args.checkpoint
+            with open(os.path.join(args.checkpoint, "args.json"), "r") as f:
+                ckpt_args = json.load(f)["args"]
+            for k, v in ckpt_args.items():
+                setattr(args, k, v)
+            args.checkpoint = checkpoint_dir
 
     # args error checking and convenience variables
     batch_size, seq_len = args.batch_size, args.sequence_length
@@ -223,6 +241,11 @@ if __name__ == "__main__":
         model_config.seq_scale = not args.no_seq_scale
 
     model = Transformer(model_config)
+    if args.checkpoint is not None:
+        print0(f"Loading model from checkpoint {args.checkpoint}")
+        model_path = os.path.join(args.checkpoint, "model.pt")
+        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        print0("Model loaded successfully.")
 
     param_count = sum(p.numel() for p in model.parameters())
     embed_param_count = sum(p.numel() for p in model.tok_embeddings.parameters())
@@ -283,6 +306,25 @@ if __name__ == "__main__":
     optimizer = torch.optim.RAdam(optim_groups, betas=(0.9, 0.95), weight_decay=args.weight_decay, decoupled_weight_decay=True)
     # optimizer = torch.optim.AdamW(optim_groups, betas=(0.9, 0.95), weight_decay=args.weight_decay)
 
+    checkpoint_step = -1
+    if args.checkpoint is not None:
+        print0(f"Loading optimizer state from checkpoint {args.checkpoint}")
+        optimizer_path = os.path.join(args.checkpoint, "optimizer.pt")
+        opt_dict = torch.load(optimizer_path, map_location='cpu')
+        optimizer.load_state_dict(opt_dict)
+        
+        for key in opt_dict['state']:
+            if checkpoint_step == -1:
+                checkpoint_step = opt_dict['state'][key]['step']
+            if opt_dict['state'][key]['step'] != opt_dict['state'][0]['step']:
+                raise ValueError(f"Optimizer state is not consistent, step mismatch: {opt_dict['state'][key]['step']} != {opt_dict['state'][0]['step']}")
+        del opt_dict
+        print0("Optimizer state loaded successfully.")
+
+    step_correction = 0
+    if args.reset_steps and args.checkpoint is not None:
+        step_correction = checkpoint_step 
+        num_iterations += step_correction
 
 
     # learning rate decay scheduler (cosine with warmup)
@@ -309,12 +351,15 @@ if __name__ == "__main__":
     #                         tokens_per_batch=tokens_per_batch, model=raw_model)
     
     # def __init__(self, args, dataset_args, model_args, model, rank=0):
-    monitor0 = StateMonitor(args, dataset_args, model_config, raw_model, optimizer, rank=ddp_rank)
+    monitor0 = StateMonitor(args, dataset_args, model_config, raw_model, optimizer, checkpoint_step, rank=ddp_rank)
                             
     # for step in range(args.num_iterations + 1):
     for step, batches in enumerate(train_loader):
+        if step < checkpoint_step:
+            continue
+
         t0 = time.time()
-        last_step = (step == args.num_iterations)
+        last_step = (step == num_iterations)
 
         # once in a while evaluate the validation dataset
         if (args.val_loss_every > 0 \
@@ -409,7 +454,7 @@ if __name__ == "__main__":
         lossf = lossf.item()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         # # determine and set the learning rate for this iteration
-        optimizer = set_lr(optimizer, step, num_iterations, args)
+        optimizer = set_lr(optimizer, step-step_correction, num_iterations, args)
         # lr = get_lr(step)
         # all_lrs = set()
         # for param_group in optimizer.param_groups:
@@ -440,6 +485,7 @@ if __name__ == "__main__":
         monitor0.log(step, lossf, norm, compute_radam_lr(optimizer))
         
     monitor0.save_model()
+    monitor0.save_optimizer()
     monitor0.max_memory()
 
     # once in a while evaluate the validation dataset

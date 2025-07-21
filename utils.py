@@ -250,8 +250,11 @@ class StateMonitor:
     # def __init__(self, log_dir='logs', rank=0, model_type=None, model_pos_enc=None, num_iterations=None, 
     #              tokens_per_batch=None, model=None, val_tokens=0):
 
-    def __init__(self, args, dataset_args, model_args, model, optimizer, rank=0):
-        self.num_iterations = dataset_args.iterations
+    def __init__(self, args, dataset_args, model_args, model, optimizer, checkpoint_step, rank=0):
+        # self.num_iterations = dataset_args.iterations
+        self.num_iterations = min(dataset_args.iterations, args.num_iterations)
+        if checkpoint_step > 0:
+            self.num_iterations += checkpoint_step
         self.tokens_per_batch = dataset_args.tokens_per_batch
         self.rank = rank
         self.val_tokens = dataset_args.val_tokens
@@ -327,7 +330,7 @@ class StateMonitor:
             lr = lr if lr is not None else 0
             print(f"step {step+1:4d}/{self.num_iterations} | train loss {loss:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(exec_time):.2f} s | {tokens_per_second:.0f} tok/s)")
         
-            if step % 500 == 0:
+            if step % 256 == 0:
                 # checkpoint(self.model, rank=self.rank)
                 self.save_model()
                 self.save_optimizer()
