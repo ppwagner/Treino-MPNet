@@ -13,12 +13,14 @@ parser.add_argument('--log_dir', type=str, default='logs', help='Directory to lo
 parser.add_argument('--perplexity', action=argparse.BooleanOptionalAction, default=False, help='Whether to run perplexity evaluation')
 parser.add_argument('--perplexity_seq_len', type=int, default=32_768, help='Sequence length for perplexity evaluation')
 parser.add_argument('--perplexity_wiki_articles', type=int, default=128, help='Number of Wikipedia articles for perplexity evaluation')
+parser.add_argument('--compile', action=argparse.BooleanOptionalAction, default=False, help='Whether to compile the model with torch.compile')
+parser.add_argument('--dtype', type=str, default='bfloat16', help='Data type for the model (e.g., float16, bfloat16, float32)')
 args = parser.parse_args()
 
 if args.perplexity:
     perplexity_dataset_dirs = ['wikipedia'],
 
-passkey_seq_lens = torch.linspace(args.linspace_start, args.linspace_end, args.linspace_steps).int().tolist()
+passkey_seq_lens = torch.linspace(args.linspace_start, args.linspace_end, args.linspace_steps).int().tolist()[1:]  # Exclude the first element (0)
 evaluator = Evaluator(device=args.device,
                       seq_batch_size=args.seq_batch_size,
                       passkey_seq_lens=passkey_seq_lens,
@@ -26,6 +28,8 @@ evaluator = Evaluator(device=args.device,
                       perplexity_seq_len=args.perplexity_seq_len,
                       perplexity_wiki_articles=args.perplexity_wiki_articles,
                       perplexity_dataset_dirs=['wikipedia'] if args.perplexity else [],
+                      compile=args.compile,
+                      dtype=args.dtype
 )
 # bam_ssmax_1024      = 'logs/l12/bam_ssmax/version_08/'
 evaluator.evaluate(args.log_dir)

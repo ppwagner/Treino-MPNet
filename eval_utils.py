@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from time import time
+from contextlib import nullcontext
 
 from inference_models.sinusoidal import SinusoidalModelArgs, SinusoidalTransformer
 from inference_models.sinusoidal_ssmax import SinusoidalSSMaxModelArgs, SinusoidalSSMaxTransformer
@@ -252,9 +253,19 @@ class Evaluator:
                  perplexity_wiki_articles=256,
                  seq_batch_size=512,
                  device='cpu',
+                 compile=False,
+                 dtype='bfloat16'
                  ):
         self.passkey_seq_lens = passkey_seq_lens or [0, 128, 256, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 26624, 28672, 30720, 32768]
         self.passkey_evaluators = []
+        self.device = device
+        self.compile = compile
+
+        # set up a context manager following the desired dtype and device
+        ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
+        device_type = 'cuda' if 'cuda' in device else 'cpu'
+        self.ctx = torch.autocast(device_type=device_type, dtype=ptdtype) if (device_type == "cuda") else nullcontext()
+
         for sampling in passkey_samplings:
             self.passkey_evaluators.append(PasskeyEvaluator(
                 seq_lens=self.passkey_seq_lens,
@@ -281,25 +292,27 @@ class Evaluator:
             
     def evaluate(self, model_dir, evals=['passkey', 'perplexity']):
         model = self.load_model(model_dir)
+        if self.compile:
+            model = torch.compile(model)
         results = self.load_results(model_dir)
 
 
+        with self.ctx:
+            if 'passkey' in evals:
+                passkey_results = {}
+                for evaluator in self.passkey_evaluators:
+                    results['passkey'], passkey_result = evaluator.evaluate(model, prev_results=results['passkey'])
+                    passkey_results[evaluator.sampling] = passkey_result
+            else:
+                passkey_result = None
 
-        if 'passkey' in evals:
-            passkey_results = {}
-            for evaluator in self.passkey_evaluators:
-                results['passkey'], passkey_result = evaluator.evaluate(model, prev_results=results['passkey'])
-                passkey_results[evaluator.sampling] = passkey_result
-        else:
-            passkey_result = None
-
-        if 'perplexity' in evals:
-            perplexity_results = {}
-            for evaluator in self.perplexity_evaluators:
-                results['perplexity'], perplexity_result = evaluator.evaluate(model, prev_results=results['perplexity'])
-                perplexity_results[evaluator.dataset_dir] = perplexity_result
-        else:
-            perplexity_result = None
+            if 'perplexity' in evals:
+                perplexity_results = {}
+                for evaluator in self.perplexity_evaluators:
+                    results['perplexity'], perplexity_result = evaluator.evaluate(model, prev_results=results['perplexity'])
+                    perplexity_results[evaluator.dataset_dir] = perplexity_result
+            else:
+                perplexity_result = None
 
         # Save the results
         with open(os.path.join(model_dir, 'results.json'), 'w') as f:
