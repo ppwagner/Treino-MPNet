@@ -54,7 +54,7 @@ if __name__ == "__main__":
     parser.add_argument("--global_prior", action=argparse.BooleanOptionalAction, help="whether to use a global prior for BAM")
     parser.add_argument("--thata_beta_init", type=str, default='0', help="initial theta beta (shape) exponent for BAM, either a string, or float")
     parser.add_argument("--theta_alpha_init", type=str, default='0', help="initial exponential scale multiplier for BAM, either a string or float")
-    parser.add_argument("--theta_mu_init", type=float, default='0', help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
+    parser.add_argument("--theta_mu_init", type=str, default='0', help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM")
     parser.add_argument("--theta_beta_trainable", type=int, default=1, help="trainable theta beta (shape) exponent for BAM")
     parser.add_argument("--theta_alpha_trainable", type=int, default=1, help="trainable theta alpha exponent multiplier (scale) for BAM")
     parser.add_argument("--theta_mu_trainable", type=int, default=0, help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM")
@@ -190,7 +190,7 @@ if __name__ == "__main__":
 
     # set up a context manager following the desired dtype and device
     ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[args.dtype]
-    ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if (device_type == "cuda") else nullcontext()
+    ctx = torch.autocast(device_type=device_type, dtype=ptdtype) if (device_type == "cuda") else nullcontext()
 
     # rng / reproducibility
     torch.manual_seed(42)
@@ -226,6 +226,12 @@ if __name__ == "__main__":
         "l24": ModelArgs(dim=2048, n_layers=24, n_heads=64, ffn_dim_multiplier=2),
         # "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4),
         "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4, n_kv_heads=8),
+
+        "l16.0": ModelArgs(dim=1536, n_layers=14, n_heads=48, ffn_dim_multiplier=2),
+        "l16.1": ModelArgs(dim=1536, n_layers=14, n_heads=32, ffn_dim_multiplier=2),
+        "l16.2": ModelArgs(dim=1536, n_layers=14, n_heads=24, ffn_dim_multiplier=2),
+        "l16.3": ModelArgs(dim=1536, n_layers=14, n_heads=16, ffn_dim_multiplier=2),
+        "l16.4": ModelArgs(dim=1536, n_layers=14, n_heads=12, ffn_dim_multiplier=2),
     }[args.model_size]
     model_config.max_seq_len = seq_len
     model_config.max_batch_size = batch_size
@@ -322,9 +328,9 @@ if __name__ == "__main__":
         print0("Optimizer state loaded successfully.")
 
     step_correction = 0
-    if args.reset_steps and args.checkpoint is not None:
+    if args.reset_steps and (args.checkpoint is not None):
         step_correction = checkpoint_step 
-        num_iterations += step_correction
+        # num_iterations += step_correction
 
 
     # learning rate decay scheduler (cosine with warmup)
@@ -351,7 +357,7 @@ if __name__ == "__main__":
     #                         tokens_per_batch=tokens_per_batch, model=raw_model)
     
     # def __init__(self, args, dataset_args, model_args, model, rank=0):
-    monitor0 = StateMonitor(args, dataset_args, model_config, raw_model, optimizer, checkpoint_step, rank=ddp_rank)
+    monitor0 = StateMonitor(args, dataset_args, model_config, raw_model, optimizer, step_correction, rank=ddp_rank)
                             
     # for step in range(args.num_iterations + 1):
     for step, batches in enumerate(train_loader):
@@ -359,7 +365,7 @@ if __name__ == "__main__":
             continue
 
         t0 = time.time()
-        last_step = (step == num_iterations)
+        last_step = (step == num_iterations + step_correction)
 
         # once in a while evaluate the validation dataset
         if (args.val_loss_every > 0 \
