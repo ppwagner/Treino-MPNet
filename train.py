@@ -329,7 +329,7 @@ if __name__ == "__main__":
 
     step_correction = 0
     if args.reset_steps and (args.checkpoint is not None):
-        step_correction = checkpoint_step 
+        step_correction = checkpoint_step if checkpoint_step >= 0 else 0
         # num_iterations += step_correction
 
 
