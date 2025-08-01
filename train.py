@@ -227,11 +227,11 @@ if __name__ == "__main__":
         # "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4),
         "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4, n_kv_heads=8),
 
-        "l16.0": ModelArgs(dim=1536, n_layers=14, n_heads=48, ffn_dim_multiplier=2),
-        "l16.1": ModelArgs(dim=1536, n_layers=14, n_heads=32, ffn_dim_multiplier=2),
-        "l16.2": ModelArgs(dim=1536, n_layers=14, n_heads=24, ffn_dim_multiplier=2),
-        "l16.3": ModelArgs(dim=1536, n_layers=14, n_heads=16, ffn_dim_multiplier=2),
-        "l16.4": ModelArgs(dim=1536, n_layers=14, n_heads=12, ffn_dim_multiplier=2),
+        "l14.0": ModelArgs(dim=1536, n_layers=14, n_heads=48, ffn_dim_multiplier=2),
+        "l14.1": ModelArgs(dim=1536, n_layers=14, n_heads=32, ffn_dim_multiplier=2),
+        "l14.2": ModelArgs(dim=1536, n_layers=14, n_heads=24, ffn_dim_multiplier=2),
+        "l14.3": ModelArgs(dim=1536, n_layers=14, n_heads=16, ffn_dim_multiplier=2),
+        "l14.4": ModelArgs(dim=1536, n_layers=14, n_heads=12, ffn_dim_multiplier=2),
     }[args.model_size]
     model_config.max_seq_len = seq_len
     model_config.max_batch_size = batch_size
