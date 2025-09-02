@@ -56,24 +56,7 @@ class DistributedShardedDataset(IterableDataset):
 
 
         # glob files that match the pattern
-        self.files = sorted(os.listdir(f"data/{dataset_dir}"))
-        self.files = [f"data/{dataset_dir}/{f}" for f in self.files]
-        # self.files = ['data/10B/sample_000000.pt', 'data/10B/sample_000001.pt']
-        assert len(self.files) > 0, f"did not find any files that match the pattern {dataset_dir}"
-
-        # load and validate all data shards, count number of tokens in total
-        print0(f"Dataset: loading {len(self.files)} files")
-        ntok_total = 0
-        for fname in self.files:
-            shard_ntok = self.load_data_shard(fname)[0].size(0)
-            assert shard_ntok > num_processes * batch_size * seq_len
-            ntok_total += shard_ntok
-        self.ntok_total = ntok_total
-        print0(f"Dataset: total number of tokens:               {ntok_total:16,}")
-        print0(f"Dataset: number of shards:                     {len(self.files):16,}")
-        
-        self.num_iterations = (ntok_total - self.val_tokens - self.val_tokens_padding) // self.tokens_per_batch
-        print0(f"Dataset: number of iterations:                 {self.num_iterations:16,}")
+        self.dataset_path = os.path.join('data', dataset_dir)
 
         # kick things off
         self.current_shard      = None
@@ -85,13 +68,14 @@ class DistributedShardedDataset(IterableDataset):
         if self.current_shard != 0:
             self.current_shard   = 0
             self.global_position = 0
-            self.input_ids, self.seq_codes = self.load_data_shard(self.files[self.current_shard])
+            self.input_ids, self.seq_codes = self.load_data_shard(self.current_shard)
         self.world_position    = self.val_tokens_padding + self.val_tokens
         self.current_position  = self.process_rank * self.batch_size * self.seq_len
         self.current_position += self.val_tokens_padding + self.val_tokens
     
-    def load_data_shard(self, filename):
-        dataset = torch.load(filename)
+    def load_data_shard(self, idx):
+        filepath = os.path.join(self.dataset_path, f"sample_{idx:06d}.pt")
+        dataset = torch.load(filepath)
         return dataset['input_ids'], dataset['seq_codes']
     
     def __iter__(self):
@@ -116,7 +100,7 @@ class DistributedShardedDataset(IterableDataset):
     
     def load_next_shard(self):
         self.current_shard = (self.current_shard + 1)
-        if self.current_shard >= len(self.files):
+        if os.path.exists(os.path.join(self.dataset_path, f"sample_{self.current_shard:06d}.pt")) is False:
             print(f'Rank {self.process_rank} has finished the dataset')
             raise StopIteration
         self.current_position = self.process_rank * self.tokens_per_fwd
@@ -126,7 +110,7 @@ class DistributedShardedDataset(IterableDataset):
         self.input_ids = self.input_ids[remainder_pos:]
         self.seq_codes = self.seq_codes[remainder_pos:]
 
-        new_input_ids, new_seq_codes = self.load_data_shard(self.files[self.current_shard])
+        new_input_ids, new_seq_codes = self.load_data_shard(self.current_shard)
         self.input_ids = torch.cat([self.input_ids, new_input_ids], dim=0)
         self.seq_codes = torch.cat([self.seq_codes, new_seq_codes], dim=0)
 
