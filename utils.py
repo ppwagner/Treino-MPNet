@@ -22,8 +22,6 @@ class DatasetArgs:
         val_tokens: int
         tokens_per_batch: int
         val_tokens_padding: int
-        total_tokens: int
-        iterations: int
         num_processes: int
     
 
@@ -149,8 +147,6 @@ class DistributedShardedDataset(IterableDataset):
             val_tokens=self.val_tokens,
             tokens_per_batch=self.tokens_per_batch,
             val_tokens_padding=self.val_tokens_padding,
-            total_tokens=self.ntok_total,
-            iterations=self.num_iterations,
             num_processes=self.num_processes,
         )
         return args
@@ -236,7 +232,8 @@ class StateMonitor:
 
     def __init__(self, args, dataset_args, model_args, model, optimizer, checkpoint_step, rank=0):
         # self.num_iterations = dataset_args.iterations
-        self.num_iterations = min(dataset_args.iterations, args.num_iterations)
+        # self.num_iterations = min(dataset_args.iterations, args.num_iterations)
+        self.num_iterations = args.num_iterations
         if checkpoint_step > 0:
             self.num_iterations += checkpoint_step
         self.tokens_per_batch = dataset_args.tokens_per_batch

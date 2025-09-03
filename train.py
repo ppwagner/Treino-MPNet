@@ -67,7 +67,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokens_per_step", type=int, default=None, help="exact number of tokens per step")
     parser.add_argument("--max_tokens_per_step", type=int, default=None, help="maximum number of tokens per step")
     # workload (number of steps)
-    parser.add_argument("--num_iterations", type=int, default=float('inf'), help="number of iterations to run")
+    parser.add_argument("--num_iterations", type=int, required=True, help="number of iterations to run")
     # optimization
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="learning rate warmup iterations")
     parser.add_argument("--warmup_iters", type=int, default=0, help="learning rate warmup iterations, not needed due to the use of RAdam optimizer")
@@ -276,8 +276,8 @@ if __name__ == "__main__":
     dataset_args = dataset.get_args()
     val_dataset = dataset.get_val_dataset(device=device)
     train_loader = torch.utils.data.DataLoader(dataset, num_workers=1, batch_size=None, prefetch_factor=4, pin_memory=True, pin_memory_device=device)
-    num_iterations = min(dataset_args.iterations, args.num_iterations)
-    print(f"Dataset Iterations: {dataset_args.iterations:16,}")
+    num_iterations = args.num_iterations
+    # print(f"Dataset Iterations: {dataset_args.iterations:16,}")
     print(f"Total Training Iterations: {num_iterations:16,}")
 
 
