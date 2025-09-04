@@ -22,11 +22,12 @@ args = parser.parse_args()
 
 
 # FineWeb has a few possible subsamples available
-assert args.version in {"10B", "100B"}, "version must be one of: 10B, 100B"
+assert args.version in {"10B", "100B", "350B"}, "version must be one of: 10B, 100B"
 assert args.type in {"edu", "classic"}, "type must be one of: edu, classic"
 directories = {
     ("classic", "10B"):     ("HuggingFaceFW/fineweb",       "10B",      "sample-10BT"),
     ("classic", "100B"):    ("HuggingFaceFW/fineweb",       "100B",     "sample-100BT"),
+    ("classic", "350B"):    ("HuggingFaceFW/fineweb",       "350B",     "sample-350BT"),
     ("edu",     "10B"):     ("HuggingFaceFW/fineweb-edu",   "edu_10B",  "sample-10BT"),
     ("edu",     "100B"):    ("HuggingFaceFW/fineweb-edu",   "edu_100B", "sample-100BT")
 }
