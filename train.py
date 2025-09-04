@@ -225,7 +225,8 @@ if __name__ == "__main__":
         "l18": ModelArgs(dim=1536, n_layers=18, n_heads=32, ffn_dim_multiplier=2),
         "l24": ModelArgs(dim=2048, n_layers=24, n_heads=64, ffn_dim_multiplier=2),
         # "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4),
-        "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4, n_kv_heads=8),
+        "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4,   n_kv_heads=8),
+        "llama8b": ModelArgs(dim=4096, n_layers=32, n_heads=32, ffn_dim_multiplier=3.5, n_kv_heads=8),
 
         "l14.0": ModelArgs(dim=1536, n_layers=14, n_heads=48, ffn_dim_multiplier=2),
         "l14.1": ModelArgs(dim=1536, n_layers=14, n_heads=32, ffn_dim_multiplier=2),
