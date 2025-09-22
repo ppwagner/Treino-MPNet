@@ -110,6 +110,10 @@ class Attention(nn.Module):
         values = values.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
         queries, keys = apply_rotarySSMax_emb(queries, keys, freqs_cis=freqs_cis)
+        
+        # repeat k/v heads if n_kv_heads < n_heads
+        keys = repeat_kv(keys, self.n_rep)      # (bs, seqlen, n_local_heads, head_dim)
+        values = repeat_kv(values, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
