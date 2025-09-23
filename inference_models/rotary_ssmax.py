@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from torch import nn
+import torch.nn.functional as F
+from torch.nn.attention.flex_attention import flex_attention
+from torch.nn.attention.flex_attention import create_block_mask
 
 
 @dataclass
@@ -96,16 +98,12 @@ class Attention(nn.Module):
         self.seq_scale = nn.Parameter(seq_scale, requires_grad=args.seq_scale)
 
 
-        self.cache_k = torch.zeros((1, 8192, self.n_local_kv_heads, self.head_dim))
-        self.cache_v = torch.zeros((1, 8192, self.n_local_kv_heads, self.head_dim))
-
     def forward(
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
         section_log_len: Optional[torch.Tensor] = None,
-        start_pos: Optional[int] = 0,
     ):
         bsz, seqlen, _ = x.shape
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
@@ -116,31 +114,20 @@ class Attention(nn.Module):
 
         queries, keys = apply_rotary_emb(queries, keys, freqs_cis=freqs_cis)
 
-        self.cache_k = self.cache_k.to(x.device)
-        self.cache_v = self.cache_v.to(x.device)
-        if self.cache_k.size(1) < seqlen+start_pos:
-            new_size = max(seqlen+start_pos, self.cache_k.size(1)*2)
-            temp_cache_k = torch.zeros((1, new_size, self.n_local_kv_heads, self.head_dim), device=x.device)
-            temp_cache_v = torch.zeros((1, new_size, self.n_local_kv_heads, self.head_dim), device=x.device)
-            temp_cache_k[:, :self.cache_k.size(1), :, :] = self.cache_k
-            temp_cache_v[:, :self.cache_v.size(1), :, :] = self.cache_v
-            self.cache_k = temp_cache_k
-            self.cache_v = temp_cache_v
-        self.cache_k[:, start_pos:start_pos+seqlen, :, :] = keys
-        self.cache_v[:, start_pos:start_pos+seqlen, :, :] = values
-        keys = self.cache_k[:, :start_pos+seqlen, :, :]
-        values = self.cache_v[:, :start_pos+seqlen, :, :]
+        # repeat k/v heads if n_kv_heads < n_heads
+        keys = repeat_kv(keys, self.n_rep)      # (bs, seqlen, n_local_heads, head_dim)
+        values = repeat_kv(values, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        ssmax_mul = section_log_len * self.seq_scale[0,:,0,:]
 
-        scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-        scores = scores * section_log_len * self.seq_scale
-        if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
-        scores = F.softmax(scores.float(), dim=-1).type_as(queries)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score * ssmax_mul[h, q_idx]
+
+        output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask)
+
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
 
@@ -190,9 +177,8 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
         section_log_len: Optional[torch.Tensor] = None,
-        start_pos: Optional[int] = 0,
     ):
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, section_log_len, start_pos)
+        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, section_log_len)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -222,45 +208,33 @@ class RotarySSMaxTransformer(nn.Module):
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, seq_batch_size: Optional[int] = None, return_logits: bool = False, return_device=None):
         return_device = return_device if return_device is not None else tokens.device
-        _bsz, full_seqlen = tokens.shape
-        full_h = self.tok_embeddings(tokens)
-        full_output = []
+        bsz, seqlen = tokens.shape
+        h = self.tok_embeddings(tokens)
 
-        if full_seqlen < 2*self.params.max_seq_len:
-            self.freqs_cis = self.freqs_cis.to(full_h.device)
-            full_freqs_cis = self.freqs_cis[:full_seqlen]
+        if seqlen < 2*self.params.max_seq_len:
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[:seqlen]
         else:
-            full_freqs_cis = precompute_freqs_cis(
+            freqs_cis = precompute_freqs_cis(
                 self.params.dim // self.params.n_heads,
-                full_seqlen,
+                seqlen,
                 self.params.rope_theta,
             )
-            full_freqs_cis = full_freqs_cis.to(full_h.device)
+            freqs_cis = freqs_cis.to(h.device)
 
-        if seq_batch_size is None:
-            seq_batch_size = full_seqlen
-        for start_pos in range(0, full_seqlen, seq_batch_size):
-            h = full_h[:, start_pos:start_pos+seq_batch_size, :]
-            freqs_cis = full_freqs_cis[start_pos:start_pos+seq_batch_size]
-            
-            _bsz, seqlen, h_dim = h.shape
-            mask = None
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
-            mask = torch.triu(mask, diagonal=1)
-            if start_pos > 0:
-                mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask])
+        section_log_len = torch.arange(1, seqlen+1, device=h.device).float().unsqueeze(0).log()
+        
 
-            section_log_len = mask.isfinite().float().sum(-1, keepdim=True).log().unsqueeze(-3)
+        def mask_mod(b, h, q_idx, kv_idx):
+            causal_mask = q_idx >= kv_idx
+            return causal_mask
+        mask = create_block_mask(mask_mod, B=None, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device)
 
-            mask = mask.type_as(h)
 
-            for layer in self.layers:
-                h = layer(h, freqs_cis, mask, section_log_len, start_pos)
-            h = self.norm(h)
-            output = self.output(h).float()
-            if return_logits:
-                full_output.append(output.to(return_device))
-            else:
-                full_output.append(output.argmax(-1).to(return_device))
-        output = torch.cat(full_output, dim=1)
-        return output
+        for layer in self.layers:
+            h = layer(h, freqs_cis, mask, section_log_len)
+        h = self.norm(h)
+        if return_logits:
+            return self.output(h).to(return_device)
+        else:
+            return self.output(h).argmax(dim=-1).to(return_device)
