@@ -325,6 +325,7 @@ if __name__ == "__main__":
                 checkpoint_step = opt_dict['state'][key]['step']
             if opt_dict['state'][key]['step'] != opt_dict['state'][0]['step']:
                 raise ValueError(f"Optimizer state is not consistent, step mismatch: {opt_dict['state'][key]['step']} != {opt_dict['state'][0]['step']}")
+        checkpoint_step = checkpoint_step.int().item()
         del opt_dict
         print0("Optimizer state loaded successfully.")
 
