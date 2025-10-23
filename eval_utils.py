@@ -327,6 +327,7 @@ class Evaluator:
 
 
     def load_model(self, dir):
+        import warnings
         with open(dir+'args.json') as f:
             args = json.load(f)
 
@@ -345,7 +346,20 @@ class Evaluator:
         }[args['args']['position_encoding']]
         model_dict = torch.load(os.path.join(dir, f'model.pt'))
         model = Transformer(ModelArgs(**args['model_args']))
+        warn = False
+        for k, v in model_dict.items():
+            if (v.ndim==4) and ('attention.prior.theta' in k):
+                model_dict[k] = v[0,:,0]
+                warn = True
+            elif (v.ndim==4) and ('attention.seq_scale' in k):
+                model_dict[k] = v[:,:,0]
+                warn = True
+            if 'module.' in k or '_orig_mod.' in k:
+                warn = True
         model_dict = {k.replace('module.', '').replace('_orig_mod.', ''): v for k, v in model_dict.items()}
+        if warn:
+
+            warnings.warn("The loaded model was trained on a previous version of the code. Some parameters have been adjusted to match the current version.")
         model.load_state_dict(model_dict)
         return model
     
