@@ -8,17 +8,17 @@ from datasets import load_dataset
 from time import time
 from contextlib import nullcontext
 
-from inference_models.sinusoidal import SinusoidalModelArgs, SinusoidalTransformer
-from inference_models.sinusoidal_ssmax import SinusoidalSSMaxModelArgs, SinusoidalSSMaxTransformer
-from inference_models.rotary import RotaryModelArgs, RotaryTransformer
-from inference_models.rotary_local import LocalRotaryTransformer, LocalRotaryModelArgs
-from inference_models.rotary_ssmax import RotarySSMaxModelArgs, RotarySSMaxTransformer
-from inference_models.alibi import ALiBiModelArgs, ALiBiTransformer
-from inference_models.alibi_ssmax import ALiBiSSMaxModelArgs, ALiBiSSMaxTransformer
-from inference_models.bam import BATransformer, BATModelArgs
-from inference_models.bam_ssmax import SSMaxBATransformer, SSMaxBATModelArgs
-from inference_models.nope import NoPEModelArgs, NoPETransformer
-from inference_models.nope_ssmax import NoPESSMaxModelArgs, NoPESSMaxTransformer
+from models.sinusoidal import SinusoidalModelArgs, SinusoidalTransformer
+from models.sinusoidal_ssmax import SinusoidalSSMaxModelArgs, SinusoidalSSMaxTransformer
+from models.rotary import RotaryModelArgs, RotaryTransformer
+from models.rotary_local import LocalRotaryTransformer, LocalRotaryModelArgs
+from models.rotary_ssmax import RotarySSMaxModelArgs, RotarySSMaxTransformer
+from models.alibi import ALiBiModelArgs, ALiBiTransformer
+from models.alibi_ssmax import ALiBiSSMaxModelArgs, ALiBiSSMaxTransformer
+from models.bam import BATransformer, BATModelArgs
+from models.bam_ssmax import SSMaxBATransformer, SSMaxBATModelArgs
+from models.nope import NoPEModelArgs, NoPETransformer
+from models.nope_ssmax import NoPESSMaxModelArgs, NoPESSMaxTransformer
 
 
 
@@ -33,7 +33,7 @@ class PasskeyEvaluator:
         self.patience = patience
         self.sample_size = sample_size
         self.seq_batch_size = seq_batch_size
-
+    
     @torch.inference_mode()
     def evaluate(self, model, verbose=True, patience=None, prev_results=None):
         result_config = str((self.sampling, self.sample_size, self.pred_digits, self.preffix_digits))
@@ -60,7 +60,7 @@ class PasskeyEvaluator:
                 if not len(prompt) == seq_len:
                     raise ValueError(f"Prompt length {len(prompt)} does not match expected length {seq_len}")
                 model_input = torch.tensor(prompt+pass_key).unsqueeze(0).to(self.device)
-                output = model(model_input, seq_batch_size=self.seq_batch_size)
+                output = model(model_input).argmax(-1)
                 pred_pass_key = output[0, -self.pred_digits-1:-1].cpu()
                 if (list(pred_pass_key) == pass_key[self.preffix_digits+1:]):
                     correct += 1
@@ -200,6 +200,7 @@ class PerplexityEvaluator:
             tokens = tokens[:nbatches * (seq_len + 1)]
             self.tokens = tokens.reshape(nbatches, seq_len+1)
 
+    @torch.inference_mode()
     def evaluate(self, model, prev_results=None):
         model.to(self.device)
         if prev_results is not None:
@@ -217,7 +218,7 @@ class PerplexityEvaluator:
         for i, tokens in enumerate(self.tokens):
             print(f'{i+1}/{len(self.tokens)}   {(entropies.mean()/(i+1)).exp()}')
 
-            output = model(tokens.unsqueeze(0).to(self.device), seq_batch_size=self.seq_batch_size, return_logits=True, return_device='cpu')
+            output = model(tokens.unsqueeze(0).to(self.device)).cpu()
             loss = self.cross_entropy(output[0, :-1, :], tokens[1:]).reshape(-1, self.window_size)
 
             entropies += loss.mean(dim=-1).cpu().detach()
@@ -289,7 +290,8 @@ class Evaluator:
                 seq_batch_size=seq_batch_size,
                 device=device,
             ))
-            
+
+    @torch.inference_mode()        
     def evaluate(self, model_dir, evals=['passkey', 'perplexity']):
         model = self.load_model(model_dir)
         if self.compile:

@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from torch import nn
+import torch.nn.functional as F
+from torch.nn.attention.flex_attention import flex_attention
+from torch.nn.attention.flex_attention import create_block_mask
 
 
 @dataclass
@@ -63,7 +65,7 @@ class Attention(nn.Module):
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
 
-        seq_scale =  torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
+        seq_scale =  torch.ones((1, args.n_heads, 1), dtype=torch.float)
         self.seq_scale = nn.Parameter(seq_scale, requires_grad=args.seq_scale)
 
     def forward(
@@ -86,13 +88,21 @@ class Attention(nn.Module):
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-        if section_log_len is not None:
-            scores = scores * (section_log_len * self.seq_scale)
-        if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
-        scores = F.softmax(scores.float(), dim=-1).type_as(queries)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+
+        ssmax_mul = section_log_len * self.seq_scale
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score * ssmax_mul[b, h, q_idx]
+        output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask,
+                                kernel_options = {
+                                    "BLOCK_M":  32,
+                                    "BLOCK_N":  32,
+                                    "BLOCK_M1": 32,
+                                    "BLOCK_N1": 32,
+                                    "BLOCK_M2": 32,
+                                    "BLOCK_N2": 32,
+                                }
+                                )
+
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
 
@@ -164,26 +174,28 @@ class NoPESSMaxTransformer(nn.Module):
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
     def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
-        _bsz, seqlen = tokens.shape
+        bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
 
-        mask = None
-        if seqlen > 1:
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+        if seq_codes is not None:
+            correction = torch.zeros_like(seq_codes, device=tokens.device)
+            positions = torch.arange(seq_codes.size(-1), device=tokens.device).unsqueeze(0)
+            positions = positions.repeat(seq_codes.size(0), 1)
 
-            mask = torch.triu(mask, diagonal=1)
+            first_tokens = seq_codes.diff(dim=-1) != 0
+            correction[:,1:][first_tokens] = positions[:,1:][first_tokens]
 
-            if seq_codes is not None:
-                mask = mask.unsqueeze(0).repeat(_bsz, 1, 1)
-                section_mask = seq_codes.unsqueeze(-1) != seq_codes.unsqueeze(-2)
-                mask[section_mask] = float("-inf")
-                mask = mask.unsqueeze(-3)
+            correction = correction.cummax(dim=-1).values
+            positions = positions - correction + 1
+            section_log_len = positions.log().unsqueeze(1)
+        else:
+            section_log_len = torch.arange(1, seqlen+1).log().unsqueeze(0).unsqueeze(0).to(tokens.device).repeat(bsz, 1, 1)
 
-                section_log_len = torch.tril(~section_mask, diagonal=0).sum(-1, keepdim=True).log().unsqueeze(-3)
-            else:
-                section_log_len = torch.tril(torch.ones((1,1,seqlen,seqlen)), diagonal=0).sum(-1, keepdim=True).log().to(tokens.device)
-
-            mask = mask.type_as(h)
+        def mask_mod(b, h, q_idx, kv_idx):
+            causal_mask = q_idx >= kv_idx
+            seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
+            return causal_mask & seq_mask
+        mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
 
         for layer in self.layers:
             h = layer(h, mask, section_log_len)

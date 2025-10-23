@@ -10,7 +10,7 @@ from torch.nn.attention.flex_attention import create_block_mask
 
 
 @dataclass
-class RotarySSMaxModelArgs:
+class LocalRotaryModelArgs:
     dim: int = 1024
     n_layers: int = 32
     n_heads: int = 32
@@ -23,7 +23,6 @@ class RotarySSMaxModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 1024
 
-    seq_scale: bool = True
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -55,7 +54,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
-def apply_rotary_emb(
+def apply_LocalRotary_emb(
     xq: torch.Tensor,
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
@@ -81,7 +80,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 class Attention(nn.Module):
-    def __init__(self, args: RotarySSMaxModelArgs):
+    def __init__(self, args: LocalRotaryModelArgs):
         super().__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
         self.n_local_heads = args.n_heads
@@ -94,16 +93,11 @@ class Attention(nn.Module):
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
 
-        seq_scale =  torch.ones((1, args.n_heads, 1, 1), dtype=torch.float)
-        self.seq_scale = nn.Parameter(seq_scale, requires_grad=args.seq_scale)
-
-
     def forward(
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
-        section_log_len: Optional[torch.Tensor] = None,
     ):
         bsz, seqlen, _ = x.shape
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
@@ -112,21 +106,26 @@ class Attention(nn.Module):
         keys = keys.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         values = values.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
-        queries, keys = apply_rotary_emb(queries, keys, freqs_cis=freqs_cis)
-
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(keys, self.n_rep)      # (bs, seqlen, n_local_heads, head_dim)
         values = repeat_kv(values, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
+        queries, keys = apply_LocalRotary_emb(queries, keys, freqs_cis=freqs_cis)
+
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        ssmax_mul = section_log_len * self.seq_scale[0,:,0,:]
 
-        def score_mod(score, b, h, q_idx, kv_idx):
-            return score * ssmax_mul[h, q_idx]
-
-        output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask)
+        output = flex_attention(queries, keys, values, block_mask=mask,
+                                kernel_options = {
+                                    "BLOCK_M":  32,
+                                    "BLOCK_N":  32,
+                                    "BLOCK_M1": 32,
+                                    "BLOCK_N1": 32,
+                                    "BLOCK_M2": 32,
+                                    "BLOCK_N2": 32,
+                                }
+                                )
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
@@ -155,7 +154,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: RotarySSMaxModelArgs):
+    def __init__(self, layer_id: int, args: LocalRotaryModelArgs):
         super().__init__()
         self.n_heads = args.n_heads
         self.dim = args.dim
@@ -176,15 +175,14 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
-        section_log_len: Optional[torch.Tensor] = None,
     ):
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, section_log_len)
+        h = x + self.attention(self.attention_norm(x), freqs_cis, mask)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
 
-class RotarySSMaxTransformer(nn.Module):
-    def __init__(self, params: RotarySSMaxModelArgs):
+class LocalRotaryTransformer(nn.Module):
+    def __init__(self, params: LocalRotaryModelArgs):
         super().__init__()
         self.params = params
         self.vocab_size = params.vocab_size
@@ -205,12 +203,9 @@ class RotarySSMaxTransformer(nn.Module):
             params.rope_theta,
         )
 
-    @torch.inference_mode()
-    def forward(self, tokens: torch.Tensor, seq_batch_size: Optional[int] = None, return_logits: bool = False, return_device=None):
-        return_device = return_device if return_device is not None else tokens.device
+    def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
-
         if seqlen < 2*self.params.max_seq_len:
             self.freqs_cis = self.freqs_cis.to(h.device)
             freqs_cis = self.freqs_cis[:seqlen]
@@ -222,19 +217,15 @@ class RotarySSMaxTransformer(nn.Module):
             )
             freqs_cis = freqs_cis.to(h.device)
 
-        section_log_len = torch.arange(1, seqlen+1, device=h.device).float().unsqueeze(0).log()
-        
-
         def mask_mod(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
-            return causal_mask
-        mask = create_block_mask(mask_mod, B=None, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device)
-
+            seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
+            local_mask = (q_idx - kv_idx) < self.params.max_seq_len
+            return causal_mask & seq_mask & local_mask
+        mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
 
         for layer in self.layers:
-            h = layer(h, freqs_cis, mask, section_log_len)
+            h = layer(h, freqs_cis, mask)
         h = self.norm(h)
-        if return_logits:
-            return self.output(h).to(return_device)
-        else:
-            return self.output(h).argmax(dim=-1).to(return_device)
+        output = self.output(h).float()
+        return output
