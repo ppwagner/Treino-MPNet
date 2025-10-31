@@ -73,7 +73,7 @@ class Attention(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
         section_log_len: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        slopes: Optional[torch.Tensor] = None,
     ):
         bsz, seqlen, _ = x.shape
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
@@ -92,9 +92,7 @@ class Attention(nn.Module):
 
         ssmax_mul = section_log_len * self.seq_scale
         def score_mod(score, b, h, q_idx, kv_idx):
-            # score = score + bias[h, q_idx-kv_idx]
-            # return score * ssmax_mul[b, h, q_idx]
-            return (score * ssmax_mul[b, h, q_idx]) + bias[h, q_idx - kv_idx]
+            return (score * ssmax_mul[b, h, q_idx]) + slopes[h]*(kv_idx-q_idx)
 
         output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask,
                                 kernel_options = {
@@ -155,9 +153,9 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
         section_log_len: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        slopes: Optional[torch.Tensor] = None,
     ):
-        h = x + self.attention(self.attention_norm(x), mask, section_log_len, bias)
+        h = x + self.attention(self.attention_norm(x), mask, section_log_len, slopes)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -179,7 +177,7 @@ class ALiBiSSMaxTransformer(nn.Module):
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         slopes = self.get_slopes(params.n_heads)
-        self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads, 1), persistent=False)
+        self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads), persistent=False)
 
     def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
         bsz, seqlen = tokens.shape
@@ -204,10 +202,9 @@ class ALiBiSSMaxTransformer(nn.Module):
             seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
             return causal_mask & seq_mask
         mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
-        bias = -torch.arange(seqlen, device=tokens.device).unsqueeze(0) * self.slopes
 
         for layer in self.layers:
-            h = layer(h, mask, section_log_len, bias)
+            h = layer(h, mask, section_log_len,  self.slopes)
         h = self.norm(h)
         output = self.output(h).float()
         return output

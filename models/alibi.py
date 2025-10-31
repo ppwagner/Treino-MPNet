@@ -67,7 +67,7 @@ class Attention(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
-        bias: torch.Tensor,
+        slopes: torch.Tensor,
     ):
         bsz, seqlen, _ = x.shape
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
@@ -85,9 +85,7 @@ class Attention(nn.Module):
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         
         def score_mod(score, b, h, q_idx, kv_idx):
-            # score = score + bias[h, q_idx-kv_idx]
-            # return score * ssmax_mul[b, h, q_idx]
-            return score + bias[h, q_idx - kv_idx]
+            return score + slopes[h]*(kv_idx - q_idx)
 
         output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask,
                                 kernel_options = {
@@ -147,9 +145,9 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
-        bias: torch.Tensor,
+        slopes: torch.Tensor,
     ):
-        h = x + self.attention(self.attention_norm(x), mask, bias)
+        h = x + self.attention(self.attention_norm(x), mask, slopes)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -171,7 +169,7 @@ class ALiBiTransformer(nn.Module):
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         slopes = self.get_slopes(params.n_heads)
-        self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads, 1), persistent=False)
+        self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads), persistent=False)
 
     def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
         bsz, seqlen = tokens.shape
@@ -182,10 +180,9 @@ class ALiBiTransformer(nn.Module):
             seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
             return causal_mask & seq_mask
         mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
-        bias = -torch.arange(seqlen, device=tokens.device).unsqueeze(0) * self.slopes
 
         for layer in self.layers:
-            h = layer(h, mask, bias)
+            h = layer(h, mask, self.slopes)
         h = self.norm(h)
         output = self.output(h).float()
         return output
