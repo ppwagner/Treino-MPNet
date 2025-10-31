@@ -246,6 +246,7 @@ class BATransformer(nn.Module):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
 
+        seq_codes = seq_codes if seq_codes is not None else torch.zeros_like(tokens, device=tokens.device)
         def mask_mod(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
             seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]

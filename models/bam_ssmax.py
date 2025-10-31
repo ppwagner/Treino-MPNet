@@ -259,6 +259,7 @@ class SSMaxBATransformer(nn.Module):
             section_log_len = positions.log().unsqueeze(1)
         else:
             section_log_len = torch.arange(1, seqlen+1).log().unsqueeze(0).unsqueeze(0).to(tokens.device).repeat(bsz, 1, 1)
+            seq_codes = torch.zeros_like(tokens, device=tokens.device)
 
         def mask_mod(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
