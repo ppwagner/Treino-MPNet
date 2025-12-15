@@ -234,7 +234,7 @@ if __name__ == "__main__":
         "l14.3": ModelArgs(dim=1536, n_layers=14, n_heads=16, ffn_dim_multiplier=2),
         "l14.4": ModelArgs(dim=1536, n_layers=14, n_heads=12, ffn_dim_multiplier=2),
     }[args.model_size]
-    model_config.max_seq_len = seq_len
+    model_config.max_seq_len = int(seq_len * 1.5)
     model_config.max_batch_size = batch_size
     if "bam" in args.position_encoding:
         model_config.thata_beta_init = args.thata_beta_init
@@ -378,9 +378,13 @@ if __name__ == "__main__":
             # val_dataset.reset()
             with torch.no_grad():
                 val_loss = 0.0
-                for input_ids, seq_codes, targets in val_dataset:
-                    logits = model(input_ids, seq_codes=seq_codes)
-                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            with torch.no_grad():
+                val_loss = 0.0
+                for input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask in val_dataset:
+                    input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask = input_ids.to(device), pos_ids.to(device), seq_codes.to(device), targets.to(device), attention_mask.to(device), loss_mask.to(device)
+                    logits = model(input_ids, positions=pos_ids, attention_mask=attention_mask, seq_codes=seq_codes)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='none')
+                    loss = (loss * loss_mask.view(-1)).sum() / torch.clamp(loss_mask.sum(), min=1.0)
                     val_loss += loss.item()
                 val_loss /= len(val_dataset)
             if ddp:
@@ -437,8 +441,8 @@ if __name__ == "__main__":
             train_loader.reset()
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
         lossf = 0.0 # for getting the mean loss (as simple float) over the accumulation steps
-        for micro_step, (input_ids, seq_codes, targets) in enumerate(batches):
-            input_ids, seq_codes, targets = input_ids.to(device), seq_codes.to(device), targets.to(device)
+        for micro_step, (input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask) in enumerate(batches):
+            input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask = input_ids.to(device), pos_ids.to(device), seq_codes.to(device), targets.to(device), attention_mask.to(device), loss_mask.to(device)
             # input_ids, targets = input_ids.to(device), targets.to(device)
             if ddp:
                 # we want only the last micro-step to sync grads in a DDP model
@@ -447,8 +451,9 @@ if __name__ == "__main__":
                 model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
             # forward pass
             with ctx:
-                logits = model(input_ids, seq_codes=seq_codes)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                logits = model(input_ids, positions=pos_ids, attention_mask=attention_mask, seq_codes=seq_codes)
+                loss_per_token = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='none')
+                loss = (loss_per_token * loss_mask.view(-1)).sum() / torch.clamp(loss_mask.sum(), min=1.0)
                 # we have to scale the loss to account for gradient accumulation,
                 # because the gradients just add on each successive backward().
                 # addition of gradients corresponds to a SUM in the objective, but
@@ -503,9 +508,13 @@ if __name__ == "__main__":
         # val_dataset.reset()
         with torch.no_grad():
             val_loss = 0.0
-            for input_ids, seq_codes, targets in val_dataset:
-                logits = model(input_ids, seq_codes=seq_codes)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        with torch.no_grad():
+            val_loss = 0.0
+            for input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask in val_dataset:
+                input_ids, pos_ids, seq_codes, targets, attention_mask, loss_mask = input_ids.to(device), pos_ids.to(device), seq_codes.to(device), targets.to(device), attention_mask.to(device), loss_mask.to(device)
+                logits = model(input_ids, positions=pos_ids, attention_mask=attention_mask, seq_codes=seq_codes)
+                loss_per_token = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='none')
+                loss = (loss_per_token * loss_mask.view(-1)).sum() / torch.clamp(loss_mask.sum(), min=1.0)
                 val_loss += loss.item()
             val_loss /= len(val_dataset)
             if ddp:

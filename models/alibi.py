@@ -68,6 +68,7 @@ class Attention(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
         slopes: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
     ):
         bsz, seqlen, _ = x.shape
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
@@ -85,7 +86,9 @@ class Attention(nn.Module):
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         
         def score_mod(score, b, h, q_idx, kv_idx):
-            return score + slopes[h]*(kv_idx - q_idx)
+            if positions is not None:
+                return score - slopes[h] * torch.abs(positions[b, kv_idx] - positions[b, q_idx])
+            return score - slopes[h] * torch.abs(kv_idx - q_idx)
 
         output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask,
                                 kernel_options = {
@@ -146,8 +149,9 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor],
         slopes: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
     ):
-        h = x + self.attention(self.attention_norm(x), mask, slopes)
+        h = x + self.attention(self.attention_norm(x), mask, slopes, positions=positions)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -171,19 +175,24 @@ class ALiBiTransformer(nn.Module):
         slopes = self.get_slopes(params.n_heads)
         self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads), persistent=False)
 
-    def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
+    def forward(self, tokens: torch.Tensor, positions: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, seq_codes: Optional[torch.Tensor] = None):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         
-        seq_codes = seq_codes if seq_codes is not None else torch.zeros_like(tokens, device=tokens.device)
-        def mask_mod(b, h, q_idx, kv_idx):
-            causal_mask = q_idx >= kv_idx
-            seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
-            return causal_mask & seq_mask
-        mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
+        if attention_mask is not None:
+            def mask_mod(b, h, q_idx, kv_idx):
+                return attention_mask[b, q_idx, kv_idx]
+            mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
+        else:
+            seq_codes = seq_codes if seq_codes is not None else torch.zeros_like(tokens, device=tokens.device)
+            def mask_mod(b, h, q_idx, kv_idx):
+                # causal_mask = q_idx >= kv_idx
+                seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
+                return causal_mask & seq_mask
+            mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
 
         for layer in self.layers:
-            h = layer(h, mask, self.slopes)
+            h = layer(h, mask, self.slopes, positions=positions)
         h = self.norm(h)
         output = self.output(h).float()
         return output
