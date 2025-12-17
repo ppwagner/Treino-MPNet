@@ -43,11 +43,12 @@ args = parser.parse_args()
 
 
 # FineWeb has a few possible subsamples available
-assert args.version in {"10B", "100B", "350B"}, "version must be one of: 10B, 100B"
+assert args.version in {"10B", "100B"}, "version must be one of: 10B, 100B"
 directories = {
-    ("portuguese", "10B"): ("HuggingFaceFW/fineweb-2", "10B", "por_Latn"),
+    "10B": ("HuggingFaceFW/fineweb-2", "10B", "por_Latn"),
+    "100B": ("HuggingFaceFW/fineweb-2", "100B", "por_Latn"),
 }
-dataset_dir, local_dir, name = directories[(args.type, args.version)]
+dataset_dir, local_dir, name = directories[args.version]
 
 wish_num_tokens = int(args.version[:-1]) * 10**9
 os.makedirs(f"./data/{local_dir}", exist_ok=True)
