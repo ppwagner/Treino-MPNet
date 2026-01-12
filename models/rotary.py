@@ -1,12 +1,10 @@
-import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
-from torch import nn
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention
-from torch.nn.attention.flex_attention import create_block_mask
+from torch import nn
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
 
 @dataclass
@@ -15,7 +13,7 @@ class RotaryModelArgs:
     n_layers: int = 32
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
-    vocab_size: int = 32768 
+    vocab_size: int = 65536
     multiple_of: int = 1  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-5
@@ -38,20 +36,33 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+def precompute_freqs_cis(
+    dim: int, positions: torch.Tensor, theta: float = 10000.0
+):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device, dtype=torch.float32)
-    freqs = torch.outer(t, freqs)
+
+    freqs = freqs.to(positions.device)
+    t = positions.to(torch.float32)
+    freqs = t.unsqueeze(-1) * freqs
+
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
     return freqs_cis
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+    # x: (bsz, seqlen, n_heads, hd2) complex
+    bsz, seqlen, _, hd2 = x.shape
+
+    # teoricamente nunca é para entrar aqui nesse if
+    if freqs_cis.ndim == 2:
+        # (seqlen, hd2) -> (1, seqlen, 1, hd2)
+        return freqs_cis.reshape(1, seqlen, 1, hd2)
+
+    if freqs_cis.ndim == 3:
+        # (bsz, seqlen, hd2) -> (bsz, seqlen, 1, hd2)
+        return freqs_cis.unsqueeze(2)
+
+    raise ValueError(f"freqs_cis com shape inesperado: {freqs_cis.shape}")
 
 
 def apply_rotary_emb(
@@ -59,11 +70,20 @@ def apply_rotary_emb(
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+
+#    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+#    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+
+    hdq = xq.shape[-1]
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], hdq // 2, 2).contiguous())
+
+    hdk = xk.shape[-1]
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], hdk // 2, 2).contiguous())
+
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
@@ -107,25 +127,29 @@ class Attention(nn.Module):
         values = values.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
         # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(keys, self.n_rep)      # (bs, seqlen, n_local_heads, head_dim)
+        keys = repeat_kv(keys, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
         values = repeat_kv(values, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
-
         queries, keys = apply_rotary_emb(queries, keys, freqs_cis=freqs_cis)
-
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(
+            1, 2
+        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
 
-        output = flex_attention(queries, keys, values, block_mask=mask,
-                                kernel_options = {
-                                    "BLOCK_M":  32,
-                                    "BLOCK_N":  32,
-                                    "BLOCK_M1": 32,
-                                    "BLOCK_N1": 32,
-                                    "BLOCK_M2": 32,
-                                    "BLOCK_N2": 32,
-                                }
-                                )
+        output = flex_attention(
+            queries,
+            keys,
+            values,
+            block_mask=mask,
+            kernel_options={
+                "BLOCK_M": 32,
+                "BLOCK_N": 32,
+                "BLOCK_M1": 32,
+                "BLOCK_N1": 32,
+                "BLOCK_M2": 32,
+                "BLOCK_N2": 32,
+            },
+        )
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
@@ -197,32 +221,44 @@ class RotaryTransformer(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        self.freqs_cis = precompute_freqs_cis(
-            params.dim // params.n_heads,
-            params.max_seq_len * 2,
-            params.rope_theta,
-        )
 
-    def forward(self, tokens: torch.Tensor, seq_codes: Optional[torch.Tensor] = None):
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
+        seq_codes: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+    ):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
-        if seqlen < 2*self.params.max_seq_len:
-            self.freqs_cis = self.freqs_cis.to(h.device)
-            freqs_cis = self.freqs_cis[:seqlen]
-        else:
-            freqs_cis = precompute_freqs_cis(
-                self.params.dim // self.params.n_heads,
-                seqlen,
-                self.params.rope_theta,
-            )
-            freqs_cis = freqs_cis.to(h.device)
 
-        seq_codes = seq_codes if seq_codes is not None else torch.zeros_like(tokens, device=tokens.device)
+        freqs_cis = precompute_freqs_cis(
+            self.params.dim // self.params.n_heads,
+            positions,
+            theta=self.params.rope_theta,
+        )
+        freqs_cis = freqs_cis.to(h.device)
+
+        seq_codes = (
+            seq_codes
+            if seq_codes is not None
+            else torch.zeros_like(tokens, device=tokens.device)
+        )
+
         def mask_mod(b, h, q_idx, kv_idx):
-            causal_mask = q_idx >= kv_idx
+            # causal_mask = q_idx >= kv_idx
             seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
-            return causal_mask & seq_mask
-        mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
+            return seq_mask
+
+        mask = create_block_mask(
+            mask_mod,
+            B=bsz,
+            H=None,
+            Q_LEN=seqlen,
+            KV_LEN=seqlen,
+            device=tokens.device,
+            BLOCK_SIZE=128,
+        )
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask)
