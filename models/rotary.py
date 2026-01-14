@@ -17,7 +17,7 @@ class RotaryModelArgs:
     multiple_of: int = 1  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-5
-    rope_theta: float = 500000
+    rope_theta: float = 10000.0
     max_batch_size: int = 32
     max_seq_len: int = 1024
 
@@ -36,9 +36,7 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
-def precompute_freqs_cis(
-    dim: int, positions: torch.Tensor, theta: float = 10000.0
-):
+def precompute_freqs_cis(dim: int, positions: torch.Tensor, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
 
     freqs = freqs.to(positions.device)
@@ -70,15 +68,18 @@ def apply_rotary_emb(
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-#    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-#    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    #    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    #    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
 
     hdq = xq.shape[-1]
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], hdq // 2, 2).contiguous())
+    xq_ = torch.view_as_complex(
+        xq.float().reshape(*xq.shape[:-1], hdq // 2, 2).contiguous()
+    )
 
     hdk = xk.shape[-1]
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], hdk // 2, 2).contiguous())
+    xk_ = torch.view_as_complex(
+        xk.float().reshape(*xk.shape[:-1], hdk // 2, 2).contiguous()
+    )
 
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
@@ -220,7 +221,6 @@ class RotaryTransformer(nn.Module):
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
-
 
     def forward(
         self,
