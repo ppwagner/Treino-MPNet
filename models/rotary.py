@@ -247,8 +247,8 @@ class RotaryTransformer(nn.Module):
 
         def mask_mod(b, h, q_idx, kv_idx):
             # causal_mask = q_idx >= kv_idx
-            seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
-            return seq_mask
+            # seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
+            return attention_mask[b, q_idx, kv_idx]
 
         mask = create_block_mask(
             mask_mod,

@@ -1,12 +1,11 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
-from torch import nn
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention
-from torch.nn.attention.flex_attention import create_block_mask
+from torch import nn
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
 
 @dataclass
@@ -78,28 +77,37 @@ class Attention(nn.Module):
         values = values.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
         # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(keys, self.n_rep)      # (bs, seqlen, n_local_heads, head_dim)
+        keys = repeat_kv(keys, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
         values = repeat_kv(values, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
         queries = queries.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        
+        values = values.transpose(
+            1, 2
+        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+
         def score_mod(score, b, h, q_idx, kv_idx):
             if positions is not None:
-                return score - slopes[h] * torch.abs(positions[b, kv_idx] - positions[b, q_idx])
+                return score - slopes[h] * torch.abs(
+                    positions[b, kv_idx] - positions[b, q_idx]
+                )
             return score - slopes[h] * torch.abs(kv_idx - q_idx)
 
-        output = flex_attention(queries, keys, values, score_mod=score_mod, block_mask=mask,
-                                kernel_options = {
-                                    "BLOCK_M":  32,
-                                    "BLOCK_N":  32,
-                                    "BLOCK_M1": 32,
-                                    "BLOCK_N1": 32,
-                                    "BLOCK_M2": 32,
-                                    "BLOCK_N2": 32,
-                                }
-                                )
+        output = flex_attention(
+            queries,
+            keys,
+            values,
+            score_mod=score_mod,
+            block_mask=mask,
+            kernel_options={
+                "BLOCK_M": 32,
+                "BLOCK_N": 32,
+                "BLOCK_M1": 32,
+                "BLOCK_N1": 32,
+                "BLOCK_M2": 32,
+                "BLOCK_N2": 32,
+            },
+        )
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
@@ -151,7 +159,9 @@ class TransformerBlock(nn.Module):
         slopes: torch.Tensor,
         positions: Optional[torch.Tensor] = None,
     ):
-        h = x + self.attention(self.attention_norm(x), mask, slopes, positions=positions)
+        h = x + self.attention(
+            self.attention_norm(x), mask, slopes, positions=positions
+        )
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -173,38 +183,79 @@ class ALiBiTransformer(nn.Module):
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         slopes = self.get_slopes(params.n_heads)
-        self.register_buffer("slopes", torch.tensor(slopes).reshape(params.n_heads), persistent=False)
+        self.register_buffer(
+            "slopes", torch.tensor(slopes).reshape(params.n_heads), persistent=False
+        )
 
-    def forward(self, tokens: torch.Tensor, positions: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, seq_codes: Optional[torch.Tensor] = None):
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        seq_codes: Optional[torch.Tensor] = None,
+    ):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
-        
+
         if attention_mask is not None:
+
             def mask_mod(b, h, q_idx, kv_idx):
                 return attention_mask[b, q_idx, kv_idx]
-            mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
+
+            mask = create_block_mask(
+                mask_mod,
+                B=bsz,
+                H=None,
+                Q_LEN=seqlen,
+                KV_LEN=seqlen,
+                device=tokens.device,
+                BLOCK_SIZE=128,
+            )
         else:
-            seq_codes = seq_codes if seq_codes is not None else torch.zeros_like(tokens, device=tokens.device)
+            seq_codes = (
+                seq_codes
+                if seq_codes is not None
+                else torch.zeros_like(tokens, device=tokens.device)
+            )
+
             def mask_mod(b, h, q_idx, kv_idx):
                 # causal_mask = q_idx >= kv_idx
                 seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
-                return causal_mask & seq_mask
-            mask = create_block_mask(mask_mod, B=bsz, H=None, Q_LEN=seqlen, KV_LEN=seqlen, device=tokens.device, BLOCK_SIZE=128)
+                return seq_mask
+
+            mask = create_block_mask(
+                mask_mod,
+                B=bsz,
+                H=None,
+                Q_LEN=seqlen,
+                KV_LEN=seqlen,
+                device=tokens.device,
+                BLOCK_SIZE=128,
+            )
 
         for layer in self.layers:
             h = layer(h, mask, self.slopes, positions=positions)
         h = self.norm(h)
         output = self.output(h).float()
         return output
-    
+
     def get_slopes(self, n):
         if math.log2(n).is_integer():
-            return self.get_slopes_power_of_2(n)              #In the paper, we only train models that have 2^a heads for some a. This function has
-        else:                                                 #some good properties that only occur when the input is a power of 2. To maintain that even
-            closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround. 
-            return self.get_slopes_power_of_2(closest_power_of_2) + self.get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
+            return self.get_slopes_power_of_2(
+                n
+            )  # In the paper, we only train models that have 2^a heads for some a. This function has
+        else:  # some good properties that only occur when the input is a power of 2. To maintain that even
+            closest_power_of_2 = 2 ** math.floor(
+                math.log2(n)
+            )  # when the number of heads is not a power of 2, we use this workaround.
+            return (
+                self.get_slopes_power_of_2(closest_power_of_2)
+                + self.get_slopes(2 * closest_power_of_2)[0::2][
+                    : n - closest_power_of_2
+                ]
+            )
 
     def get_slopes_power_of_2(self, n):
-        start = (2**(-2**-(math.log2(n)-3)))
+        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
         ratio = start
-        return [start*ratio**i for i in range(n)]
+        return [start * ratio**i for i in range(n)]
