@@ -9,29 +9,41 @@ from transformers import AutoTokenizer
 # ------------------------------------------
 
 parser = argparse.ArgumentParser(
-    description="FineWeb and Edu-FineWeb dataset preprocessing"
+    description="FineWeb, FinePDF and FinePDF-EDU dataset preprocessing"
 )
+
 parser.add_argument(
-    "--version", type=str, default="10B", help="Fineweb-2 data sample size, 10B|100B"
+    "--dataset",
+    type=str,
+    required=True,
+    help="Dataset to tokenize (fineweb-2 | finepdfs | finepdfs-edu)",
 )
+
+parser.add_argument(
+    "--version", type=str, default="10B", help="Data sample size (10B | 100B)"
+)
+
 parser.add_argument(
     "--tokenizer",
     type=str,
-    default="mistralai/Mistral-7B-Instruct-v0.3",
+    required=True,
     help="HuggingFace tokenizer",
 )
+
 parser.add_argument(
     "--shard_size",
     type=int,
     default=10**8,
     help="Size of each data shard in the output .pt files, in tokens",
 )
+
 parser.add_argument(
     "--batch_size",
     type=int,
     default=2**16,
     help="Size of each data shard in the output .pt files, in tokens",
 )
+
 parser.add_argument(
     "--streaming",
     action=argparse.BooleanOptionalAction,
@@ -41,14 +53,16 @@ parser.add_argument(
 # parser.add_argument("--num_proc", type=int, default=1, help="Number of processes to use for loading the dataset")
 args = parser.parse_args()
 
-
 # FineWeb has a few possible subsamples available
 assert args.version in {"10B", "100B"}, "version must be one of: 10B, 100B"
-directories = {
-    "10B": ("HuggingFaceFW/fineweb-2", "10B", "por_Latn"),
-    "100B": ("HuggingFaceFW/fineweb-2", "100B", "por_Latn"),
-}
-dataset_dir, local_dir, name = directories[args.version]
+assert args.dataset in {"fineweb-2", "finepdfs", "finepdfs-edu"}, (
+    "dataset must be one of: fineweb-2, finepdfs, finepdfs-edu"
+)
+
+dataset_dir = f"HuggingFaceFW/{args.dataset}"
+local_dir = f"{args.dataset}-{args.version}-{args.tokenizer}"
+name = "por_Latn"
+
 
 wish_num_tokens = int(args.version[:-1]) * 10**9
 os.makedirs(f"./data/{local_dir}", exist_ok=True)

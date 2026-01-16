@@ -50,7 +50,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="10B",
+        required=True,
         help="data/ directory containing the training data",
     )
     parser.add_argument(
