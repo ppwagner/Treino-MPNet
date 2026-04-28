@@ -13,20 +13,11 @@ import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from models.alibi import ALiBiModelArgs, ALiBiTransformer
-from models.alibi_ssmax import ALiBiSSMaxModelArgs, ALiBiSSMaxTransformer
-from models.bam import BATModelArgs, BATransformer
-from models.bam_ssmax import SSMaxBATModelArgs, SSMaxBATransformer
-from models.nope import NoPEModelArgs, NoPETransformer
-from models.nope_ssmax import NoPESSMaxModelArgs, NoPESSMaxTransformer
 from models.rotary import RotaryModelArgs, RotaryTransformer
-from models.rotary_ssmax import RotarySSMaxModelArgs, RotarySSMaxTransformer
 
 ########################################################################################
 ########################################################################################
 # from models.model import Transformer, ModelArgs
-from models.sinusoidal import SinusoidalModelArgs, SinusoidalTransformer
-from models.sinusoidal_ssmax import SinusoidalSSMaxModelArgs, SinusoidalSSMaxTransformer
 from utils import (
     DistributedShardedDataset,
     StateMonitor,
@@ -58,68 +49,6 @@ if __name__ == "__main__":
         type=str,
         default="logs",
         help="output directory to which to write logs and checkpoints",
-    )
-    parser.add_argument(
-        "--position_encoding",
-        type=str,
-        default="nope",
-        help="nope|nope_ssmax|sinusoidal|sinusoidal_ssmax|rotary|rotary_ssmax|alibi|alibi_ssmax|bam|bam_ssmax",
-    )
-    parser.add_argument(
-        "--model_size", type=str, default="l12", help="l6|l8|l12|l15|l18|l24"
-    )
-    # Bayesian Attention Mechanism arguments
-    parser.add_argument(
-        "--global_prior",
-        action=argparse.BooleanOptionalAction,
-        help="whether to use a global prior for BAM",
-    )
-    parser.add_argument(
-        "--thata_beta_init",
-        type=str,
-        default="0",
-        help="initial theta beta (shape) exponent for BAM, either a string, or float",
-    )
-    parser.add_argument(
-        "--theta_alpha_init",
-        type=str,
-        default="0",
-        help="initial exponential scale multiplier for BAM, either a string or float",
-    )
-    parser.add_argument(
-        "--theta_mu_init",
-        type=str,
-        default="0",
-        help="initial theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) sum for BAM",
-    )
-    parser.add_argument(
-        "--theta_beta_trainable",
-        type=int,
-        default=1,
-        help="trainable theta beta (shape) exponent for BAM",
-    )
-    parser.add_argument(
-        "--theta_alpha_trainable",
-        type=int,
-        default=1,
-        help="trainable theta alpha exponent multiplier (scale) for BAM",
-    )
-    parser.add_argument(
-        "--theta_mu_trainable",
-        type=int,
-        default=0,
-        help="trainable theta mu (location parameter - exp(theta_mu) - exp(-theta_mu)) for BAM",
-    )
-    parser.add_argument(
-        "--prior_lr",
-        type=float,
-        default=None,
-        help="specific learning rate for the BAM prior parameters, if not set, will use the learning rate",
-    )
-    parser.add_argument(
-        "--no_seq_scale",
-        action=argparse.BooleanOptionalAction,
-        help="whether to disable the SSMax sequence scale in BAM",
     )
     # token layout for each step of the optimization
     parser.add_argument(
@@ -256,10 +185,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    args.theta_beta_trainable = bool(args.theta_beta_trainable)
-    args.theta_alpha_trainable = bool(args.theta_alpha_trainable)
-    args.theta_mu_trainable = bool(args.theta_mu_trainable)
-
     if args.checkpoint is not None:
         # load the checkpoint
         print0(f"Loading checkpoint from {args.checkpoint}")
@@ -276,20 +201,6 @@ if __name__ == "__main__":
     # args error checking and convenience variables
     batch_size, seq_len = args.batch_size, args.sequence_length
     assert args.dtype in {"float32", "float16", "bfloat16"}
-    # assert args.model_size in {"l6", "l8", "l12", "l15", "l18", "l24"}
-    assert args.position_encoding in {
-        "rotary",
-        "rotary_ssmax",
-        "sinusoidal",
-        "sinusoidal_ssmax",
-        "alibi",
-        "alibi_ssmax",
-        "bam",
-        "bam_ssmax",
-        "nope",
-        "nope_ssmax",
-    }
-    # assert only one of min_tokens_per_step, tokens_per_step, max_tokens_per_step is set
     assert (
         sum(
             [
@@ -312,9 +223,6 @@ if __name__ == "__main__":
         )
         <= 1
     ), "only one of max_val_tokens, val_tokens, min_val_tokens can be set"
-
-    if args.prior_lr is None:
-        args.prior_lr = args.learning_rate
 
     # set up DDP (distributed data parallel). torchrun sets this env variable
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -411,54 +319,13 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision("high")
 
     # -------------------------------------------------------------------------
-    ModelArgs, Transformer = {
-        "sinusoidal": (SinusoidalModelArgs, SinusoidalTransformer),
-        "sinusoidal_ssmax": (SinusoidalSSMaxModelArgs, SinusoidalSSMaxTransformer),
-        "rotary": (RotaryModelArgs, RotaryTransformer),
-        "rotary_ssmax": (RotarySSMaxModelArgs, RotarySSMaxTransformer),
-        "alibi": (ALiBiModelArgs, ALiBiTransformer),
-        "alibi_ssmax": (ALiBiSSMaxModelArgs, ALiBiSSMaxTransformer),
-        "bam": (BATModelArgs, BATransformer),
-        "bam_ssmax": (SSMaxBATModelArgs, SSMaxBATransformer),
-        "nope": (NoPEModelArgs, NoPETransformer),
-        "nope_ssmax": (NoPESSMaxModelArgs, NoPESSMaxTransformer),
-    }[args.position_encoding]
-
     # init the model
-    model_config = {
-        "l6": ModelArgs(dim=512, n_layers=6, n_heads=16, ffn_dim_multiplier=2),
-        "l8": ModelArgs(dim=768, n_layers=8, n_heads=16, ffn_dim_multiplier=2),
-        "l12": ModelArgs(dim=768, n_layers=12, n_heads=16, ffn_dim_multiplier=2),
-        "l15": ModelArgs(dim=1152, n_layers=15, n_heads=24, ffn_dim_multiplier=2),
-        "l18": ModelArgs(dim=1536, n_layers=18, n_heads=32, ffn_dim_multiplier=2),
-        "l24": ModelArgs(dim=2048, n_layers=24, n_heads=64, ffn_dim_multiplier=2),
-        # "llama1b": ModelArgs(dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4),
-        "llama1b": ModelArgs(
-            dim=2048, n_layers=16, n_heads=32, ffn_dim_multiplier=4, n_kv_heads=8
-        ),
-        "llama8b": ModelArgs(
-            dim=4096, n_layers=32, n_heads=32, ffn_dim_multiplier=3.5, n_kv_heads=8
-        ),
-        "l14.0": ModelArgs(dim=1536, n_layers=14, n_heads=48, ffn_dim_multiplier=2),
-        "l14.1": ModelArgs(dim=1536, n_layers=14, n_heads=32, ffn_dim_multiplier=2),
-        "l14.2": ModelArgs(dim=1536, n_layers=14, n_heads=24, ffn_dim_multiplier=2),
-        "l14.3": ModelArgs(dim=1536, n_layers=14, n_heads=16, ffn_dim_multiplier=2),
-        "l14.4": ModelArgs(dim=1536, n_layers=14, n_heads=12, ffn_dim_multiplier=2),
-    }[args.model_size]
+    model_config = RotaryModelArgs(dim=768, n_layers=12, n_heads=16, ffn_dim_multiplier=2)
     model_config.max_seq_len = int(seq_len * 1.5)
     model_config.max_batch_size = batch_size
-    if "bam" in args.position_encoding:
-        model_config.thata_beta_init = args.thata_beta_init
-        model_config.theta_alpha_init = args.theta_alpha_init
-        model_config.theta_mu_init = args.theta_mu_init
-        model_config.train_theta_beta = args.theta_beta_trainable
-        model_config.train_theta_alpha = args.theta_alpha_trainable
-        model_config.train_theta_mu = args.theta_mu_trainable
-        model_config.global_positional_encoding = args.global_prior
-    if "ssmax" in args.position_encoding:
-        model_config.seq_scale = not args.no_seq_scale
 
-    model = Transformer(model_config)
+    model = RotaryTransformer(model_config)
+
     if args.checkpoint is not None:
         print0(f"Loading model from checkpoint {args.checkpoint}")
         model_path = os.path.join(args.checkpoint, "model.pt")
@@ -520,16 +387,6 @@ if __name__ == "__main__":
     )  # always contains the "raw" unwrapped model
     raw_model = raw_model._orig_mod if args.compile else model
 
-    # init the optimizer
-    # optimizer = torch.optim.AdamW(raw_model.parameters(), lr=args.learning_rate,
-    #                               betas=(0.9, 0.95), weight_decay=args.weight_decay,
-    #                               fused=('fused' in inspect.signature(torch.optim.AdamW).parameters and device_type == 'cuda')
-    # )
-    # param_dict = {pn: p for pn, p in model.module.named_parameters() if p.requires_grad}
-    # optim_groups = [
-    #     {'params': [p for n, p in param_dict.items() if p.dim() >= 2], 'weight_decay': args.weight_decay},
-    #     {'params': [p for n, p in param_dict.items() if p.dim() < 2], 'weight_decay': 0.0}
-    # ]
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     optim_groups = [
         {
@@ -551,12 +408,6 @@ if __name__ == "__main__":
             "weight_decay": 0.0,
             "init_lr": args.learning_rate,
             "lr": args.learning_rate,
-        },
-        {
-            "params": [p for n, p in param_dict.items() if "prior" in n],
-            "weight_decay": 0.0,
-            "lr": args.prior_lr,
-            "init_lr": args.prior_lr,
         },
     ]
     optimizer = torch.optim.RAdam(

@@ -20,7 +20,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--version", type=str, default="10B", help="Data sample size (10B | 100B)"
+    "--version", type=str, default="10B", help="Data sample size (10B | 36B | 100B)"
 )
 
 parser.add_argument(
@@ -54,7 +54,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 # FineWeb has a few possible subsamples available
-assert args.version in {"10B", "100B"}, "version must be one of: 10B, 100B"
+assert args.version in {"10B", "36B", "100B"}, "version must be one of: 10B, 36B, 100B"
 assert args.dataset in {"fineweb-2", "finepdfs", "finepdfs-edu"}, (
     "dataset must be one of: fineweb-2, finepdfs, finepdfs-edu"
 )
