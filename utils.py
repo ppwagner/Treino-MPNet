@@ -400,6 +400,13 @@ def set_lr(optimizer, it, num_iterations, args):
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         param_group['lr'] = min_lr + coeff * (param_group['init_lr'] - min_lr)
+    # Propagate LR to sub-optimizers (for MuonAdamW)
+    lr = optimizer.param_groups[0]['lr']
+    for attr in ('muon_optim', 'adamw_optim'):
+        sub_opt = getattr(optimizer, attr, None)
+        if sub_opt is not None:
+            for pg in sub_opt.param_groups:
+                pg['lr'] = lr
     return optimizer
 
 def compute_radam_lr(radam_optimizer):

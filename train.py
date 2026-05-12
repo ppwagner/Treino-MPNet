@@ -14,6 +14,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from models.rotary import RotaryModelArgs, RotaryTransformer
+from MuonAdamw.optimizer import MuonAdamW
 
 ########################################################################################
 ########################################################################################
@@ -21,7 +22,6 @@ from models.rotary import RotaryModelArgs, RotaryTransformer
 from utils import (
     DistributedShardedDataset,
     StateMonitor,
-    compute_radam_lr,
     print0,
     round_to_multiple,
     set_lr,
@@ -388,35 +388,42 @@ if __name__ == "__main__":
     raw_model = raw_model._orig_mod if args.compile else raw_model
 
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
+    # Embeddings são 2D mas não devem ir para o Muon
+    embed_keywords = {"tok_embeddings", "output"}
+
+    def _is_embed(name):
+        return any(kw in name for kw in embed_keywords)
+
     optim_groups = [
         {
+            # Muon group: 2D hidden-layer params (exclui embeddings)
             "params": [
                 p
                 for n, p in param_dict.items()
-                if p.squeeze().dim() >= 2 and "prior" not in n
+                if p.ndim >= 2 and "prior" not in n and not _is_embed(n)
             ],
             "weight_decay": args.weight_decay,
             "init_lr": args.learning_rate,
             "lr": args.learning_rate,
         },
         {
+            # AdamW group: 1D params + embeddings
             "params": [
                 p
                 for n, p in param_dict.items()
-                if p.squeeze().dim() < 2 and "prior" not in n
+                if (p.ndim < 2 or _is_embed(n)) and "prior" not in n
             ],
             "weight_decay": 0.0,
             "init_lr": args.learning_rate,
             "lr": args.learning_rate,
         },
     ]
-    optimizer = torch.optim.RAdam(
+    optimizer = MuonAdamW(
         optim_groups,
-        betas=(0.9, 0.95),
-        weight_decay=args.weight_decay,
-        decoupled_weight_decay=True,
+        lr=args.learning_rate,
+        muon_weight_decay=args.weight_decay,
+        adamw_weight_decay=0.0,
     )
-    # optimizer = torch.optim.AdamW(optim_groups, betas=(0.9, 0.95), weight_decay=args.weight_decay)
 
     checkpoint_step = -1
     if args.checkpoint is not None:
@@ -425,14 +432,18 @@ if __name__ == "__main__":
         opt_dict = torch.load(optimizer_path, map_location="cpu")
         optimizer.load_state_dict(opt_dict)
 
-        for key in opt_dict["state"]:
-            if checkpoint_step == -1:
-                checkpoint_step = opt_dict["state"][key]["step"]
-            if opt_dict["state"][key]["step"] != opt_dict["state"][0]["step"]:
-                raise ValueError(
-                    f"Optimizer state is not consistent, step mismatch: {opt_dict['state'][key]['step']} != {opt_dict['state'][0]['step']}"
-                )
-        checkpoint_step = checkpoint_step.int().item()
+        # Extract step from AdamW sub-optimizer state (Muon doesn't track step)
+        adamw_state = opt_dict.get("adamw", {}).get("state", {})
+        for key in adamw_state:
+            if "step" in adamw_state[key]:
+                if checkpoint_step == -1:
+                    checkpoint_step = adamw_state[key]["step"]
+                if adamw_state[key]["step"] != checkpoint_step:
+                    raise ValueError(
+                        f"Optimizer state is not consistent, step mismatch: {adamw_state[key]['step']} != {checkpoint_step}"
+                    )
+        if checkpoint_step != -1:
+            checkpoint_step = checkpoint_step.int().item() if hasattr(checkpoint_step, 'int') else int(checkpoint_step)
         del opt_dict
         print0("Optimizer state loaded successfully.")
 
@@ -672,7 +683,7 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         # log
-        monitor0.log(step, lossf, norm, compute_radam_lr(optimizer))
+        monitor0.log(step, lossf, norm, optimizer.param_groups[0]['lr'])
 
     monitor0.save_model()
     monitor0.save_optimizer()
