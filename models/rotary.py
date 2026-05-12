@@ -222,12 +222,42 @@ class RotaryTransformer(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
+    def build_block_mask(
+        self,
+        tokens: torch.Tensor,
+        attention_mask: torch.Tensor,
+        seq_codes: Optional[torch.Tensor] = None,
+    ):
+        """Build the BlockMask outside of torch.compile. This must be called
+        in eager mode before calling forward."""
+        bsz, seqlen = tokens.shape
+
+        seq_codes = (
+            seq_codes
+            if seq_codes is not None
+            else torch.zeros_like(tokens, device=tokens.device)
+        )
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return attention_mask[b, q_idx, kv_idx]
+
+        block_mask = create_block_mask(
+            mask_mod,
+            B=bsz,
+            H=None,
+            Q_LEN=seqlen,
+            KV_LEN=seqlen,
+            device=tokens.device,
+            BLOCK_SIZE=128,
+        )
+        return block_mask
+
     def forward(
         self,
         tokens: torch.Tensor,
         positions: Optional[torch.Tensor] = None,
-        seq_codes: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
+        block_mask=None,
+        **kwargs,
     ):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
@@ -239,29 +269,9 @@ class RotaryTransformer(nn.Module):
         )
         freqs_cis = freqs_cis.to(h.device)
 
-        seq_codes = (
-            seq_codes
-            if seq_codes is not None
-            else torch.zeros_like(tokens, device=tokens.device)
-        )
-
-        def mask_mod(b, h, q_idx, kv_idx):
-            # causal_mask = q_idx >= kv_idx
-            # seq_mask = seq_codes[b, q_idx] == seq_codes[b, kv_idx]
-            return attention_mask[b, q_idx, kv_idx]
-
-        mask = create_block_mask(
-            mask_mod,
-            B=bsz,
-            H=None,
-            Q_LEN=seqlen,
-            KV_LEN=seqlen,
-            device=tokens.device,
-            BLOCK_SIZE=128,
-        )
-
         for layer in self.layers:
-            h = layer(h, freqs_cis, mask)
+            h = layer(h, freqs_cis, block_mask)
         h = self.norm(h)
         output = self.output(h).float()
         return output
+

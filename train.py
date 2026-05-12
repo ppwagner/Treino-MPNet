@@ -385,7 +385,7 @@ if __name__ == "__main__":
     raw_model = (
         model.module if ddp else model
     )  # always contains the "raw" unwrapped model
-    raw_model = raw_model._orig_mod if args.compile else model
+    raw_model = raw_model._orig_mod if args.compile else raw_model
 
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     optim_groups = [
@@ -490,10 +490,6 @@ if __name__ == "__main__":
             args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)
         ) and (val_dataset is not None):
             model.eval()
-            # checkpoint(model, rank=ddp_rank)
-            # val_dataset.reset()
-            with torch.no_grad():
-                val_loss = 0.0
             with torch.no_grad():
                 val_loss = 0.0
                 for (
@@ -519,11 +515,13 @@ if __name__ == "__main__":
                         attention_mask.to(device),
                         loss_mask.to(device),
                     )
+                    block_mask = raw_model.build_block_mask(
+                        input_ids, attention_mask, seq_codes
+                    )
                     logits = model(
                         input_ids,
                         positions=pos_ids,
-                        attention_mask=attention_mask,
-                        seq_codes=seq_codes,
+                        block_mask=block_mask,
                     )
                     loss = F.cross_entropy(
                         logits.view(-1, logits.size(-1)),
@@ -617,13 +615,16 @@ if __name__ == "__main__":
                 # the official way to do this is with model.no_sync(), but that is a
                 # context manager that bloats the code, so we just toggle this variable
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
+            # build block mask in eager mode (outside torch.compile)
+            block_mask = raw_model.build_block_mask(
+                input_ids, attention_mask, seq_codes
+            )
             # forward pass
             with ctx:
                 logits = model(
                     input_ids,
                     positions=pos_ids,
-                    attention_mask=attention_mask,
-                    seq_codes=seq_codes,
+                    block_mask=block_mask,
                 )
                 loss_per_token = F.cross_entropy(
                     logits.view(-1, logits.size(-1)), targets.view(-1), reduction="none"
@@ -684,8 +685,6 @@ if __name__ == "__main__":
         # val_dataset.reset()
         with torch.no_grad():
             val_loss = 0.0
-        with torch.no_grad():
-            val_loss = 0.0
             for (
                 input_ids,
                 pos_ids,
@@ -702,11 +701,13 @@ if __name__ == "__main__":
                     attention_mask.to(device),
                     loss_mask.to(device),
                 )
+                block_mask = raw_model.build_block_mask(
+                    input_ids, attention_mask, seq_codes
+                )
                 logits = model(
                     input_ids,
                     positions=pos_ids,
-                    attention_mask=attention_mask,
-                    seq_codes=seq_codes,
+                    block_mask=block_mask,
                 )
                 loss_per_token = F.cross_entropy(
                     logits.view(-1, logits.size(-1)), targets.view(-1), reduction="none"

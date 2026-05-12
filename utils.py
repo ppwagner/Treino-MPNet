@@ -466,7 +466,7 @@ class StateMonitor:
         if self.is_main:
             # create the logging directory if it does not exist
             # log_dir = os.path.join(log_dir, model_pos_enc, model_type)
-            log_dir = os.path.join(args.log_dir, args.model_size, args.position_encoding)
+            log_dir = os.path.join(args.log_dir, "rotary")
             os.makedirs(log_dir, exist_ok=True)
             for i in range(100):
                 if os.path.exists(os.path.join(log_dir, f'version_{i:02d}')):
