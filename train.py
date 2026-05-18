@@ -180,7 +180,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reset_steps",
         action=argparse.BooleanOptionalAction,
-        help="reset the steps in the checkpoint to 0 (affect lr scheduling)",
+        help="treat the checkpoint as a starting point only: restart LR schedule from step 0 and iterate the dataset from the beginning (use when training on a new dataset)",
     )
 
     args = parser.parse_args()
@@ -447,10 +447,11 @@ if __name__ == "__main__":
         del opt_dict
         print0("Optimizer state loaded successfully.")
 
+    # When --reset_steps is set we both skip the data fast-forward and restart the
+    # LR schedule at step 0, so no correction is needed. When resuming on the same
+    # dataset, the for-loop's `continue` block advances the data loader and the LR
+    # picks up where the checkpoint left off — also no correction needed.
     step_correction = 0
-    if args.reset_steps and (args.checkpoint is not None):
-        step_correction = checkpoint_step if checkpoint_step >= 0 else 0
-        # num_iterations += step_correction
 
     # learning rate decay scheduler (cosine with warmup)
     def get_lr(it):
@@ -490,7 +491,7 @@ if __name__ == "__main__":
 
     # for step in range(args.num_iterations + 1):
     for step, batches in enumerate(train_loader):
-        if step < checkpoint_step:
+        if not args.reset_steps and step < checkpoint_step:
             continue
 
         t0 = time.time()
