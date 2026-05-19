@@ -49,9 +49,14 @@ class MuonAdamW(Optimizer):
             muon_group_params = []
             adamw_group_params = []
 
+            # Per-group opt-out: pass {"use_muon": False} to force every param in
+            # this group into AdamW (used for embeddings, which are 2D but should
+            # not be orthogonalized by Muon).
+            use_muon = group.get("use_muon", True)
+
             for p in group["params"]:
                 if p.requires_grad:
-                    if p.ndim == 2:
+                    if use_muon and p.ndim == 2:
                         muon_group_params.append(p)
                         self.muon_params.append(p)
                     else:

@@ -405,6 +405,7 @@ if __name__ == "__main__":
             "weight_decay": args.weight_decay,
             "init_lr": args.learning_rate,
             "lr": args.learning_rate,
+            "use_muon": True,
         },
         {
             # AdamW group: 1D params + embeddings
@@ -416,6 +417,7 @@ if __name__ == "__main__":
             "weight_decay": 0.0,
             "init_lr": args.learning_rate,
             "lr": args.learning_rate,
+            "use_muon": False,
         },
     ]
     optimizer = MuonAdamW(
@@ -424,6 +426,32 @@ if __name__ == "__main__":
         muon_weight_decay=args.weight_decay,
         adamw_weight_decay=0.0,
     )
+
+    # Sanity check: report which optimizer owns each chunk of the model.
+    # Catches regressions where embeddings/LM head accidentally end up in Muon.
+    def _bucket(name):
+        if "tok_embeddings" in name:
+            return "embeddings"
+        if name.startswith("output") or ".output." in name:
+            return "output (LM head)"
+        return "model"
+
+    _id_to_name = {id(p): n for n, p in param_dict.items()}
+    _muon_ids = {id(p) for g in optimizer.muon_optim.param_groups for p in g["params"]} if optimizer.muon_optim else set()
+    _adamw_ids = {id(p) for g in optimizer.adamw_optim.param_groups for p in g["params"]} if optimizer.adamw_optim else set()
+    _routing = {"Muon": {}, "AdamW": {}}
+    for _pid, _name in _id_to_name.items():
+        _cat = _bucket(_name)
+        if _pid in _muon_ids:
+            _routing["Muon"][_cat] = _routing["Muon"].get(_cat, 0) + 1
+        if _pid in _adamw_ids:
+            _routing["AdamW"][_cat] = _routing["AdamW"].get(_cat, 0) + 1
+    print0("Optimizer routing (tensores por bucket):")
+    for _opt in ["Muon", "AdamW"]:
+        for _cat in ["embeddings", "model", "output (LM head)"]:
+            _n = _routing[_opt].get(_cat, 0)
+            if _n:
+                print0(f"  {_opt:>5} <- {_cat}: {_n}")
 
     checkpoint_step = -1
     if args.checkpoint is not None:
