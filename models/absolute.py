@@ -1,8 +1,8 @@
 """Variante de posição ABSOLUTA do modelo (espelha models/rotary.py).
 
-Idêntico ao RotaryTransformer EXCETO pela codificação posicional:
+Idêntico ao RotaryTransformer exceto pela codificação posicional:
   - sem RoPE (sem precompute_freqs_cis / apply_rotary_emb);
-  - embeddings de posição APRENDIDOS (nn.Embedding) somados ao token embedding,
+  - embeddings de posição aprendidos (nn.Embedding) somados ao token embedding,
     indexados pelos MESMOS `positions` permutados/compensados que o dataset emite.
 
 Reaproveita RMSNorm, FeedForward, repeat_kv e RotaryModelArgs do rotary.py para

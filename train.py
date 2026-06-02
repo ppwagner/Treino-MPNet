@@ -27,6 +27,7 @@ from utils import (
     print0,
     round_to_multiple,
     set_lr,
+    compute_radam_lr,
 )
 
 ########################################################################################
@@ -111,6 +112,13 @@ if __name__ == "__main__":
         help="learning rate sinusoidal decay fraction, 0.1 means 10% of the initial learning rate at the end of training",
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="weight decay")
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="muon",
+        choices=["muon", "adamw"],
+        help="qual otimizador usar: muon (MuonAdamW) ou adamw puro",
+    )
     parser.add_argument(
         "--grad_clip", type=float, default=1.0, help="maximum gradient magnitude"
     )
@@ -404,7 +412,7 @@ if __name__ == "__main__":
 
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     # Embeddings são 2D mas não devem ir para o Muon
-    embed_keywords = {"tok_embeddings", "output"}
+    embed_keywords = {"tok_embeddings", "pos_embeddings", "output"}
 
     def _is_embed(name):
         return any(kw in name for kw in embed_keywords)
@@ -415,7 +423,7 @@ if __name__ == "__main__":
             "params": [
                 p
                 for n, p in param_dict.items()
-                if p.ndim >= 2 and "prior" not in n and not _is_embed(n)
+                if p.squeeze().dim() >= 2 and "prior" not in n and not _is_embed(n)
             ],
             "weight_decay": args.weight_decay,
             "init_lr": args.learning_rate,
@@ -427,7 +435,7 @@ if __name__ == "__main__":
             "params": [
                 p
                 for n, p in param_dict.items()
-                if (p.ndim < 2 or _is_embed(n)) and "prior" not in n
+                if (p.squeeze().dim() < 2 or _is_embed(n)) and "prior" not in n
             ],
             "weight_decay": 0.0,
             "init_lr": args.learning_rate,
@@ -435,25 +443,36 @@ if __name__ == "__main__":
             "use_muon": False,
         },
     ]
-    optimizer = MuonAdamW(
-        optim_groups,
-        lr=args.learning_rate,
-        muon_weight_decay=args.weight_decay,
-        adamw_weight_decay=0.0,
-    )
+    if args.optimizer == "muon":
+        optimizer = MuonAdamW(
+            optim_groups,
+            lr=args.learning_rate,
+            muon_weight_decay=args.weight_decay,
+            adamw_weight_decay=0.0,
+        )
+    else:  # adamw
+        optimizer = torch.optim.AdamW(
+            optim_groups,
+            # lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            decoupled_weight_decay=True,
+            weight_decay=args.weight_decay,
+        )
 
     # Sanity check: report which optimizer owns each chunk of the model.
     # Catches regressions where embeddings/LM head accidentally end up in Muon.
     def _bucket(name):
-        if "tok_embeddings" in name:
+        if "tok_embeddings" in name or "pos_embeddings" in name:
             return "embeddings"
         if name.startswith("output") or ".output." in name:
             return "output (LM head)"
         return "model"
 
     _id_to_name = {id(p): n for n, p in param_dict.items()}
-    _muon_ids = {id(p) for g in optimizer.muon_optim.param_groups for p in g["params"]} if optimizer.muon_optim else set()
-    _adamw_ids = {id(p) for g in optimizer.adamw_optim.param_groups for p in g["params"]} if optimizer.adamw_optim else set()
+    _muon_optim = getattr(optimizer, "muon_optim", None)
+    _adamw_optim = getattr(optimizer, "adamw_optim", None)
+    _muon_ids = {id(p) for g in _muon_optim.param_groups for p in g["params"]} if _muon_optim else set()
+    _adamw_ids = {id(p) for g in _adamw_optim.param_groups for p in g["params"]} if _adamw_optim else set()
     _routing = {"Muon": {}, "AdamW": {}}
     for _pid, _name in _id_to_name.items():
         _cat = _bucket(_name)
@@ -475,15 +494,20 @@ if __name__ == "__main__":
         opt_dict = torch.load(optimizer_path, map_location="cpu")
         optimizer.load_state_dict(opt_dict)
 
-        # Extract step from AdamW sub-optimizer state (Muon doesn't track step)
-        adamw_state = opt_dict.get("adamw", {}).get("state", {})
-        for key in adamw_state:
-            if "step" in adamw_state[key]:
+        # Extract step from the optimizer state. The checkpoint layout depends on
+        # which optimizer saved it: MuonAdamW nests the AdamW state under "adamw"
+        # (Muon itself doesn't track step), while plain AdamW stores a flat "state".
+        if args.optimizer == "muon":
+            opt_state = opt_dict.get("adamw", {}).get("state", {})
+        else:  # adamw
+            opt_state = opt_dict.get("state", {})
+        for key in opt_state:
+            if "step" in opt_state[key]:
                 if checkpoint_step == -1:
-                    checkpoint_step = adamw_state[key]["step"]
-                if adamw_state[key]["step"] != checkpoint_step:
+                    checkpoint_step = opt_state[key]["step"]
+                if opt_state[key]["step"] != checkpoint_step:
                     raise ValueError(
-                        f"Optimizer state is not consistent, step mismatch: {adamw_state[key]['step']} != {checkpoint_step}"
+                        f"Optimizer state is not consistent, step mismatch: {opt_state[key]['step']} != {checkpoint_step}"
                     )
         if checkpoint_step != -1:
             checkpoint_step = checkpoint_step.int().item() if hasattr(checkpoint_step, 'int') else int(checkpoint_step)
@@ -727,7 +751,11 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         # log
-        monitor0.log(step, lossf, norm, optimizer.param_groups[0]['lr'])
+        if args.optimizer == "muon":
+            monitor0.log(step, lossf, norm, optimizer.param_groups[0]['lr'])
+
+        else:
+            monitor0.log(step, lossf, norm, compute_radam_lr(optimizer))
 
     monitor0.save_model()
     monitor0.save_optimizer()
