@@ -1,6 +1,5 @@
 import argparse
 import json
-import math
 import os
 import time
 from contextlib import nullcontext
@@ -97,13 +96,13 @@ if __name__ == "__main__":
         "--learning_rate",
         type=float,
         default=1e-4,
-        help="learning rate warmup iterations",
+        help="peak learning rate",
     )
     parser.add_argument(
         "--warmup_iters",
         type=int,
-        default=0,
-        help="learning rate warmup iterations, not needed due to the use of RAdam optimizer",
+        default=200,
+        help="linear LR warmup iterations (0 = disabled); applies to both AdamW and Muon",
     )
     parser.add_argument(
         "--learning_rate_decay_frac",
@@ -519,23 +518,6 @@ if __name__ == "__main__":
     # picks up where the checkpoint left off — also no correction needed.
     step_correction = 0
 
-    # learning rate decay scheduler (cosine with warmup)
-    def get_lr(it):
-        min_lr = args.learning_rate * args.learning_rate_decay_frac
-        # 1) linear warmup for warmup_iters steps
-        if it < args.warmup_iters:
-            return args.learning_rate * (it + 1) / args.warmup_iters
-        # 2) if it > lr_decay_iters, return min learning rate
-        if it > num_iterations:
-            return min_lr
-        # 3) in between, use cosine decay down to min learning rate
-        decay_ratio = (it - args.warmup_iters) / (num_iterations - args.warmup_iters)
-        assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (
-            1.0 + math.cos(math.pi * decay_ratio)
-        )  # coeff starts at 1 and goes to 0
-        return min_lr + coeff * (args.learning_rate - min_lr)
-
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     timings = []
@@ -722,15 +704,9 @@ if __name__ == "__main__":
             dist.all_reduce(lossf, op=dist.ReduceOp.AVG)
         lossf = lossf.item()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        # # determine and set the learning rate for this iteration
+        # determine and set the learning rate for this iteration
+        # (linear warmup for warmup_iters steps, then cosine decay; see set_lr in utils.py)
         optimizer = set_lr(optimizer, step - step_correction, num_iterations, args)
-        # lr = get_lr(step)
-        # all_lrs = set()
-        # for param_group in optimizer.param_groups:
-        #     # param_group['lr'] = lr
-        #     # print(param_group['lr'], end='\t')
-        #     all_lrs.add(param_group['lr'])
-        # print(all_lrs)
 
         # step the optimizer
         # if lossf == lossf: # check for NaN
