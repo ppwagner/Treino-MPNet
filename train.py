@@ -14,6 +14,8 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from models.rotary import RotaryModelArgs, RotaryTransformer
+from models.absolute import AbsoluteTransformer
+from models.relative import RelativeTransformer
 from MuonAdamw.optimizer import MuonAdamW
 
 ########################################################################################
@@ -49,6 +51,13 @@ if __name__ == "__main__":
         type=str,
         default="logs",
         help="output directory to which to write logs and checkpoints",
+    )
+    parser.add_argument(
+        "--position_encoding",
+        type=str,
+        default="rope",
+        choices=["rope", "absolute", "relative"],
+        help="codificação posicional: rope (RotaryTransformer) | absolute (AbsoluteTransformer) | relative (RelativeTransformer)",
     )
     # token layout for each step of the optimization
     parser.add_argument(
@@ -324,7 +333,13 @@ if __name__ == "__main__":
     model_config.max_seq_len = int(seq_len * 1.5)
     model_config.max_batch_size = batch_size
 
-    model = RotaryTransformer(model_config)
+    if args.position_encoding == "absolute":
+        model = AbsoluteTransformer(model_config)
+    elif args.position_encoding == "relative":
+        model = RelativeTransformer(model_config)
+    else:
+        model = RotaryTransformer(model_config)
+    print0(f"Position encoding: {args.position_encoding}")
 
     if args.checkpoint is not None:
         print0(f"Loading model from checkpoint {args.checkpoint}")
