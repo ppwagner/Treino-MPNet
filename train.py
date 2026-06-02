@@ -455,7 +455,6 @@ if __name__ == "__main__":
             optim_groups,
             # lr=args.learning_rate,
             betas=(0.9, 0.95),
-            decoupled_weight_decay=True,
             weight_decay=args.weight_decay,
         )
 
